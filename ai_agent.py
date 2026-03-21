@@ -8,14 +8,17 @@ stored in memory (use Redis for production).
 
 import os
 import json
-from dotenv import load_dotenv
-
-load_dotenv()  # Load .env BEFORE creating the OpenAI client
-
 from openai import OpenAI
 import database as db
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Lazy-initialize the OpenAI client (created on first use, not at import time)
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    return _client
 
 # ── Per-customer session state (in-memory; use Redis in production) ──
 sessions: dict = {}   # phone -> { "state": ..., "data": {...} }
@@ -112,7 +115,7 @@ def process_message(phone: str, incoming_msg: str) -> str:
 
     # 4. Call GPT-4o mini
     try:
-        response = client.chat.completions.create(
+        response = get_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.7,
