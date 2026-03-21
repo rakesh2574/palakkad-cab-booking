@@ -151,13 +151,12 @@ def admin_bookings():
         return {"error": "Unauthorized"}, 401
     conn = db.get_connection()
     rows = conn.execute("""
-        SELECT b.id, c.name as customer, c.phone, lf.name as pickup, lt.name as dropoff,
+        SELECT b.id, c.name as customer, c.phone,
+               b.pickup_location as pickup, b.drop_location as dropoff,
                d.name as driver, b.status, b.distance_km, b.est_duration_min,
                b.actual_duration_min, b.fare, b.booked_at, b.completed_at
         FROM bookings b
         JOIN customers c ON b.customer_id = c.id
-        JOIN locations lf ON b.from_location_id = lf.id
-        JOIN locations lt ON b.to_location_id = lt.id
         LEFT JOIN drivers d ON b.driver_id = d.id
         ORDER BY b.id DESC
     """).fetchall()
@@ -171,11 +170,9 @@ def admin_drivers():
         return {"error": "Unauthorized"}, 401
     conn = db.get_connection()
     rows = conn.execute("""
-        SELECT d.id, d.name, d.phone, d.vehicle_number, d.vehicle_type,
-               d.is_available, l.name as current_location
-        FROM drivers d
-        LEFT JOIN locations l ON d.current_location_id = l.id
-        ORDER BY d.id
+        SELECT id, name, phone, vehicle_number, vehicle_type,
+               is_available, base_area
+        FROM drivers ORDER BY id
     """).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -210,9 +207,9 @@ def admin_conversations():
 # ── Initialise DB and seed if empty ──
 db.init_db()
 
-# Auto-seed if locations table is empty (first deploy)
+# Auto-seed drivers if table is empty (first deploy)
 conn = db.get_connection()
-count = conn.execute("SELECT COUNT(*) as c FROM locations").fetchone()["c"]
+count = conn.execute("SELECT COUNT(*) as c FROM drivers").fetchone()["c"]
 conn.close()
 if count == 0:
     import seed_data

@@ -28,32 +28,10 @@ def init_db():
     -- ============================================================
     CREATE TABLE IF NOT EXISTS customers (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        phone           TEXT    UNIQUE NOT NULL,       -- E.164 format e.g. +919876543210
+        phone           TEXT    UNIQUE NOT NULL,
         name            TEXT,
         created_at      TEXT    DEFAULT (datetime('now')),
         updated_at      TEXT    DEFAULT (datetime('now'))
-    );
-
-    -- ============================================================
-    -- MAJOR LOCATIONS in Palakkad
-    -- ============================================================
-    CREATE TABLE IF NOT EXISTS locations (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        name            TEXT    UNIQUE NOT NULL,        -- e.g. 'Palakkad Fort'
-        lat             REAL,
-        lon             REAL
-    );
-
-    -- ============================================================
-    -- ROUTE MATRIX  (predefined distance & est. duration between locations)
-    -- ============================================================
-    CREATE TABLE IF NOT EXISTS routes (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        from_location_id INTEGER NOT NULL REFERENCES locations(id),
-        to_location_id   INTEGER NOT NULL REFERENCES locations(id),
-        distance_km      REAL   NOT NULL,
-        est_duration_min INTEGER NOT NULL,              -- estimated minutes
-        UNIQUE(from_location_id, to_location_id)
     );
 
     -- ============================================================
@@ -64,29 +42,29 @@ def init_db():
         name            TEXT    NOT NULL,
         phone           TEXT    UNIQUE NOT NULL,
         vehicle_number  TEXT,
-        vehicle_type    TEXT    DEFAULT 'sedan',        -- sedan / suv / auto
-        is_available    INTEGER DEFAULT 1,              -- 1 = free, 0 = on trip
-        current_location_id INTEGER REFERENCES locations(id),
+        vehicle_type    TEXT    DEFAULT 'sedan',
+        is_available    INTEGER DEFAULT 1,
+        base_area       TEXT,
         created_at      TEXT    DEFAULT (datetime('now'))
     );
 
     -- ============================================================
-    -- BOOKINGS
+    -- BOOKINGS (now stores free-text locations, not foreign keys)
     -- ============================================================
     CREATE TABLE IF NOT EXISTS bookings (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        customer_id     INTEGER NOT NULL REFERENCES customers(id),
-        driver_id       INTEGER REFERENCES drivers(id),
-        from_location_id INTEGER NOT NULL REFERENCES locations(id),
-        to_location_id   INTEGER NOT NULL REFERENCES locations(id),
-        status          TEXT    DEFAULT 'pending',      -- pending / confirmed / in_progress / completed / cancelled
-        distance_km     REAL,
-        est_duration_min INTEGER,
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id         INTEGER NOT NULL REFERENCES customers(id),
+        driver_id           INTEGER REFERENCES drivers(id),
+        pickup_location     TEXT    NOT NULL,
+        drop_location       TEXT    NOT NULL,
+        status              TEXT    DEFAULT 'pending',
+        distance_km         REAL,
+        est_duration_min    INTEGER,
         actual_duration_min INTEGER,
-        fare            REAL,                            -- calculated on completion
-        booked_at       TEXT    DEFAULT (datetime('now')),
-        started_at      TEXT,
-        completed_at    TEXT
+        fare                REAL,
+        booked_at           TEXT    DEFAULT (datetime('now')),
+        started_at          TEXT,
+        completed_at        TEXT
     );
 
     -- ============================================================
@@ -95,7 +73,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS conversations (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         customer_id     INTEGER NOT NULL REFERENCES customers(id),
-        direction       TEXT    NOT NULL,                -- 'in' or 'out'
+        direction       TEXT    NOT NULL,
         message         TEXT    NOT NULL,
         created_at      TEXT    DEFAULT (datetime('now'))
     );
@@ -148,45 +126,9 @@ def log_conversation(customer_id: int, direction: str, message: str):
     conn.close()
 
 
-def get_locations():
+def find_available_driver():
+    """Find any free driver."""
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM locations ORDER BY name").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def find_location(name_fragment: str):
-    """Fuzzy-ish location lookup."""
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM locations WHERE LOWER(name) LIKE ?",
-        (f"%{name_fragment.lower()}%",),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_route(from_id: int, to_id: int):
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM routes WHERE from_location_id = ? AND to_location_id = ?",
-        (from_id, to_id),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def find_available_driver(location_id: int = None):
-    """Find a free driver, preferring one near the pickup location."""
-    conn = get_connection()
-    if location_id:
-        row = conn.execute(
-            "SELECT * FROM drivers WHERE is_available = 1 AND current_location_id = ? LIMIT 1",
-            (location_id,),
-        ).fetchone()
-        if row:
-            conn.close()
-            return dict(row)
     row = conn.execute(
         "SELECT * FROM drivers WHERE is_available = 1 ORDER BY RANDOM() LIMIT 1"
     ).fetchone()
@@ -194,15 +136,15 @@ def find_available_driver(location_id: int = None):
     return dict(row) if row else None
 
 
-def create_booking(customer_id, driver_id, from_loc_id, to_loc_id, distance_km, est_duration_min):
+def create_booking(customer_id, driver_id, pickup_location, drop_location, distance_km, est_duration_min):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO bookings
-           (customer_id, driver_id, from_location_id, to_location_id,
+           (customer_id, driver_id, pickup_location, drop_location,
             status, distance_km, est_duration_min)
            VALUES (?, ?, ?, ?, 'confirmed', ?, ?)""",
-        (customer_id, driver_id, from_loc_id, to_loc_id, distance_km, est_duration_min),
+        (customer_id, driver_id, pickup_location, drop_location, distance_km, est_duration_min),
     )
     booking_id = cur.lastrowid
     # Mark driver busy
@@ -237,10 +179,8 @@ def complete_booking(booking_id: int, actual_duration_min: int, rate_per_min: fl
 def get_customer_bookings(customer_id: int, limit: int = 5):
     conn = get_connection()
     rows = conn.execute(
-        """SELECT b.*, lf.name as from_name, lt.name as to_name, d.name as driver_name
+        """SELECT b.*, d.name as driver_name
            FROM bookings b
-           JOIN locations lf ON b.from_location_id = lf.id
-           JOIN locations lt ON b.to_location_id = lt.id
            LEFT JOIN drivers d ON b.driver_id = d.id
            WHERE b.customer_id = ?
            ORDER BY b.booked_at DESC LIMIT ?""",
