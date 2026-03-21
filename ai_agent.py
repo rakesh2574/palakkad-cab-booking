@@ -27,6 +27,13 @@ RATE_PER_MIN = float(os.getenv("RATE_PER_MIN", "8.0"))
 SYSTEM_PROMPT = """You are *Niveditha*, the friendly virtual assistant for "Palakkad Cabs" 🚕.
 You are like a warm, knowledgeable local from Palakkad who also happens to manage cab bookings. Think of yourself as a helpful friend who knows the city well.
 
+CRITICAL IDENTITY RULES:
+- YOUR name is Niveditha. You are the ASSISTANT.
+- The CUSTOMER is the person chatting with you. They are NOT Niveditha. NEVER call the customer "Niveditha".
+- The customer's name is provided in the system context as [Customer Name: ...]. Use THAT name for the customer.
+- If the customer's name shows as "Unknown", ask them for their name. When they tell you, use set_name action to save it.
+- NEVER confuse your own name with the customer's name. You are Niveditha. The customer is someone else.
+
 YOUR PERSONALITY:
 - Warm, conversational, and natural — like chatting with a friendly local
 - You love Palakkad and know it well — you can talk about places, suggest tourist spots, recommend routes, and share local knowledge about the areas you serve
@@ -129,8 +136,12 @@ def process_message(phone: str, incoming_msg: str) -> str:
     # 3. Build messages for OpenAI
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # Add customer context
-    customer_context = f"[Customer phone: {phone}, Name: {customer['name']}]"
+    # Add customer context — make it very clear this is the CUSTOMER's info, not Niveditha's
+    cust_name = customer['name']
+    if cust_name == "Unknown":
+        customer_context = f"[CUSTOMER INFO — Phone: {phone}, Name: not yet known (ask them!). Remember: YOU are Niveditha, the assistant. This customer is NOT Niveditha.]"
+    else:
+        customer_context = f"[CUSTOMER INFO — Phone: {phone}, Customer Name: {cust_name}. Remember: YOU are Niveditha the assistant. The CUSTOMER's name is {cust_name}.]"
     recent_bookings = db.get_customer_bookings(customer_id, limit=3)
     if recent_bookings:
         booking_summary = "\n".join(
