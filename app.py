@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # Load .env before any imports that need env vars
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 
@@ -103,6 +103,108 @@ def complete_booking_endpoint(booking_id):
 
     fare = db.complete_booking(booking_id, actual_duration)
     return {"booking_id": booking_id, "fare": fare, "status": "completed"}, 200
+
+
+# ── Admin API (protected by a simple key) ──
+ADMIN_KEY = os.getenv("ADMIN_KEY", "palakkad2026")
+
+
+def check_admin():
+    key = request.args.get("key", "")
+    return key == ADMIN_KEY
+
+
+@app.route("/admin/dashboard")
+def admin_dashboard():
+    """Quick overview of everything — open in browser."""
+    if not check_admin():
+        return {"error": "Add ?key=YOUR_ADMIN_KEY to the URL"}, 401
+
+    conn = db.get_connection()
+    stats = {
+        "customers": conn.execute("SELECT COUNT(*) as c FROM customers").fetchone()["c"],
+        "drivers_total": conn.execute("SELECT COUNT(*) as c FROM drivers").fetchone()["c"],
+        "drivers_available": conn.execute("SELECT COUNT(*) as c FROM drivers WHERE is_available = 1").fetchone()["c"],
+        "bookings_total": conn.execute("SELECT COUNT(*) as c FROM bookings").fetchone()["c"],
+        "bookings_completed": conn.execute("SELECT COUNT(*) as c FROM bookings WHERE status = 'completed'").fetchone()["c"],
+        "bookings_confirmed": conn.execute("SELECT COUNT(*) as c FROM bookings WHERE status = 'confirmed'").fetchone()["c"],
+        "total_revenue": conn.execute("SELECT COALESCE(SUM(fare), 0) as total FROM bookings WHERE status = 'completed'").fetchone()["total"],
+        "messages_total": conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"],
+    }
+    conn.close()
+    return jsonify(stats)
+
+
+@app.route("/admin/customers")
+def admin_customers():
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    conn = db.get_connection()
+    rows = conn.execute("SELECT id, phone, name, created_at FROM customers ORDER BY id DESC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/admin/bookings")
+def admin_bookings():
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    conn = db.get_connection()
+    rows = conn.execute("""
+        SELECT b.id, c.name as customer, c.phone, lf.name as pickup, lt.name as dropoff,
+               d.name as driver, b.status, b.distance_km, b.est_duration_min,
+               b.actual_duration_min, b.fare, b.booked_at, b.completed_at
+        FROM bookings b
+        JOIN customers c ON b.customer_id = c.id
+        JOIN locations lf ON b.from_location_id = lf.id
+        JOIN locations lt ON b.to_location_id = lt.id
+        LEFT JOIN drivers d ON b.driver_id = d.id
+        ORDER BY b.id DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/admin/drivers")
+def admin_drivers():
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    conn = db.get_connection()
+    rows = conn.execute("""
+        SELECT d.id, d.name, d.phone, d.vehicle_number, d.vehicle_type,
+               d.is_available, l.name as current_location
+        FROM drivers d
+        LEFT JOIN locations l ON d.current_location_id = l.id
+        ORDER BY d.id
+    """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/admin/conversations")
+def admin_conversations():
+    """View recent conversations. Add ?phone=+919876543210 to filter by customer."""
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    phone = request.args.get("phone")
+    conn = db.get_connection()
+    if phone:
+        rows = conn.execute("""
+            SELECT cv.id, c.name, c.phone, cv.direction, cv.message, cv.created_at
+            FROM conversations cv
+            JOIN customers c ON cv.customer_id = c.id
+            WHERE c.phone = ?
+            ORDER BY cv.id DESC LIMIT 50
+        """, (phone,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT cv.id, c.name, c.phone, cv.direction, cv.message, cv.created_at
+            FROM conversations cv
+            JOIN customers c ON cv.customer_id = c.id
+            ORDER BY cv.id DESC LIMIT 100
+        """).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 
 # ── Initialise DB and seed if empty ──
