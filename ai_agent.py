@@ -81,12 +81,16 @@ BOOKING FLOW:
 4. Ask for DATE and TIME of travel — could be "now" (immediate) or a future date/time
    - If user says "now" or doesn't specify, treat as immediate
    - If user says "tomorrow", "next Monday", "March 30th at 9 AM", etc., capture the date and time
-5. Ask if they have any DRIVING PREFERENCES / NOTES (speed preference, AC, music, etc.)
+   - MULTI-DATE BOOKINGS: If the customer needs rides on MULTIPLE dates (e.g., exam dates, office commute for a week), capture ALL dates!
+     Use the "travel_dates" field (array) instead of "travel_date" (string). Example: ["2026-03-24", "2026-03-25", "2026-03-26"]
+     The system will automatically create one booking per date, same route and time.
+5. Capture the customer's NAME and CONTACT NUMBER if they provide it (use set_name action)
+6. Ask if they have any DRIVING PREFERENCES / NOTES (speed preference, AC, music, etc.)
    - This is optional — don't force it, but offer: "Any preferences for your ride? Like driving speed, AC preference, etc.?"
    - If they mention preferences, save them via save_preferences action for future rides
-6. When all details are clear, estimate distance/duration and confirm with the customer
-7. Fare is ₹{rate}/min based on estimated trip duration
-8. If customer confirms, create the booking
+7. When all details are clear, estimate distance/duration and confirm with the customer
+8. Fare is ₹{rate}/min based on estimated trip duration (per trip — multiply by number of dates for total)
+9. If customer confirms, create the booking(s)
 
 DISTANCE ESTIMATION GUIDELINES (Kerala-wide):
 - Use your knowledge of Kerala's roads and geography to estimate road distances and driving times
@@ -122,11 +126,17 @@ For "create_booking" action_data: {{
   "est_distance_km": 12.5,
   "est_duration_min": 30,
   "travel_date": "2026-03-28" or null for immediate,
+  "travel_dates": ["2026-03-24", "2026-03-25", "2026-03-26"] or null,
   "travel_time": "09:00" or null for immediate,
-  "driving_notes": "Prefers slow driving, AC on" or null
+  "driving_notes": "Prefers slow driving, AC on" or null,
+  "customer_name": "Name if provided in message" or null,
+  "customer_phone": "Phone if provided in message" or null
 }}
   ^^^ YOU MUST include est_distance_km and est_duration_min! Estimate using your Kerala geography knowledge.
   ^^^ travel_date format: YYYY-MM-DD. travel_time format: HH:MM (24h). Both null = immediate ride.
+  ^^^ MULTI-DATE: If the customer gives MULTIPLE dates, use "travel_dates" (array of YYYY-MM-DD strings).
+      If only one date, use "travel_date" (single string). If both are set, "travel_dates" takes priority.
+  ^^^ If the customer mentions their name or phone in the message, include it in customer_name/customer_phone so we can save it.
 For "check_bookings" action_data: {{}}
 For "cancel_booking" action_data: {{ "booking_id": 123 }}
 For "save_preferences" action_data: {{ "preferred_speed": "slow/normal/fast", "driving_notes": "any notes" }}
@@ -267,14 +277,37 @@ def process_message(phone: str, incoming_msg: str) -> str:
 
 
 def _handle_create_booking(customer_id: int, action_data: dict, base_reply: str) -> str:
-    """Create booking with GPT-estimated distance and duration. Supports future dates."""
+    """Create booking(s) with GPT-estimated distance and duration.
+    Supports immediate, single-date, and MULTI-DATE bookings."""
     from_name = action_data.get("from", "")
     to_name = action_data.get("to", "")
     est_distance = action_data.get("est_distance_km", 10.0)
     est_duration = action_data.get("est_duration_min", 20)
-    travel_date = action_data.get("travel_date")  # YYYY-MM-DD or None
     travel_time = action_data.get("travel_time")  # HH:MM or None
     driving_notes = action_data.get("driving_notes")
+
+    # Handle multi-date vs single-date
+    travel_dates = action_data.get("travel_dates")  # list of YYYY-MM-DD or None
+    travel_date = action_data.get("travel_date")     # single YYYY-MM-DD or None
+
+    # Normalize into a list of dates
+    if travel_dates and isinstance(travel_dates, list) and len(travel_dates) > 0:
+        dates = travel_dates
+    elif travel_date:
+        dates = [travel_date]
+    else:
+        dates = [None]  # Immediate ride
+
+    # Save customer name/phone if provided in the message
+    cust_name = action_data.get("customer_name")
+    cust_phone = action_data.get("customer_phone")
+    if cust_name:
+        # Get the customer's current phone from DB
+        conn = db.get_connection()
+        row = conn.execute("SELECT phone FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        conn.close()
+        if row:
+            db.update_customer_name(row["phone"], cust_name)
 
     if not from_name or not to_name:
         return "I need both a pickup and drop location to book a cab. Could you tell me where you'd like to go? 😊"
@@ -292,7 +325,46 @@ def _handle_create_booking(customer_id: int, action_data: dict, base_reply: str)
             "Please try again in a few minutes!"
         )
 
-    # Create the booking
+    # ── MULTI-DATE: create one booking per date ──
+    if len(dates) > 1:
+        booking_ids = []
+        for d in dates:
+            bid, _ = db.create_booking(
+                customer_id=customer_id,
+                driver_id=driver["id"],
+                pickup_location=from_name,
+                drop_location=to_name,
+                distance_km=est_distance,
+                est_duration_min=est_duration,
+                travel_date=d,
+                travel_time=travel_time,
+                driving_notes=driving_notes,
+            )
+            booking_ids.append((bid, d))
+
+        total_fare = est_fare * len(dates)
+        time_str = travel_time or "TBD"
+
+        reply = (
+            f"📅 *{len(dates)} Rides Scheduled!*\n\n"
+            f"📍 *Route:* {from_name} → {to_name}\n"
+            f"⏰ *Pickup Time:* {time_str}\n"
+            f"🚗 *Driver:* {driver['name']} ({driver['vehicle_number']})\n"
+            f"📏 *Distance:* ~{est_distance} km per trip\n"
+            f"⏱️ *Est. Duration:* ~{est_duration} min per trip\n"
+            f"💰 *Fare:* ₹{est_fare} × {len(dates)} days = *₹{total_fare}*\n\n"
+            f"📋 *Booking Details:*\n"
+        )
+        for bid, d in booking_ids:
+            reply += f"  • #{bid} — 📅 {d}\n"
+
+        if driving_notes:
+            reply += f"\n📝 *Notes:* {driving_notes}\n"
+        reply += f"\nYour driver will contact you before each ride! 🙌"
+        return reply
+
+    # ── SINGLE DATE or IMMEDIATE ──
+    single_date = dates[0]
     booking_id, status = db.create_booking(
         customer_id=customer_id,
         driver_id=driver["id"],
@@ -300,19 +372,18 @@ def _handle_create_booking(customer_id: int, action_data: dict, base_reply: str)
         drop_location=to_name,
         distance_km=est_distance,
         est_duration_min=est_duration,
-        travel_date=travel_date,
+        travel_date=single_date,
         travel_time=travel_time,
         driving_notes=driving_notes,
     )
 
-    # Build reply based on immediate vs scheduled
     if status == "scheduled":
         time_str = travel_time or "TBD"
         reply = (
             f"📅 *Ride Scheduled!* (#{booking_id})\n\n"
             f"📍 *Pickup:* {from_name}\n"
             f"📍 *Drop:* {to_name}\n"
-            f"📅 *Date:* {travel_date}\n"
+            f"📅 *Date:* {single_date}\n"
             f"⏰ *Time:* {time_str}\n"
             f"🚗 *Driver:* {driver['name']} ({driver['vehicle_number']})\n"
             f"📏 *Distance:* ~{est_distance} km\n"
