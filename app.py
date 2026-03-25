@@ -1,8 +1,7 @@
 """
-Flask app — Twilio WhatsApp webhook for Palakkad Cabs.
+Flask app — Twilio WhatsApp webhook for Kerala Cabs.
 
-Twilio sends incoming WhatsApp messages here as POST requests.
-We process them through the AI agent and reply via Twilio.
+V2: Kerala-wide coverage, scheduled rides, driving preferences, smart rebooking.
 """
 
 import os
@@ -19,7 +18,7 @@ import ai_agent
 
 app = Flask(__name__)
 
-# Twilio credentials (for sending proactive messages later if needed)
+# Twilio credentials
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
@@ -29,34 +28,24 @@ twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_AC
 
 @app.route("/")
 def home():
-    return "🚕 Palakkad Cabs WhatsApp Bot is running!"
+    return "🚕 Kerala Cabs WhatsApp Bot is running! (v2 — All Kerala)"
 
 
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
-    """
-    Twilio sends POST to this endpoint when a WhatsApp message arrives.
-
-    Key form fields from Twilio:
-      - From:  'whatsapp:+919876543210'
-      - Body:  The message text
-      - ProfileName: WhatsApp display name (optional)
-    """
+    """Twilio sends POST here when a WhatsApp message arrives."""
     incoming_msg = request.form.get("Body", "").strip()
-    from_number = request.form.get("From", "")        # e.g. whatsapp:+919876543210
+    from_number = request.form.get("From", "")
     profile_name = request.form.get("ProfileName", "")
 
-    # Extract clean phone number
     phone = from_number.replace("whatsapp:", "").strip()
 
     print(f"📩 Message from {phone} ({profile_name}): {incoming_msg}")
 
-    # Process through AI agent
     reply_text = ai_agent.process_message(phone, incoming_msg)
 
     print(f"📤 Reply to {phone}: {reply_text}")
 
-    # Build Twilio TwiML response
     resp = MessagingResponse()
     resp.message(reply_text)
 
@@ -65,10 +54,7 @@ def whatsapp_webhook():
 
 @app.route("/send", methods=["POST"])
 def send_proactive_message():
-    """
-    API endpoint to send a proactive WhatsApp message (e.g., driver updates).
-    POST JSON: { "phone": "+919876543210", "message": "Your driver is arriving!" }
-    """
+    """API endpoint to send a proactive WhatsApp message."""
     if not twilio_client:
         return {"error": "Twilio not configured"}, 500
 
@@ -92,10 +78,7 @@ def send_proactive_message():
 
 @app.route("/bookings/<int:booking_id>/complete", methods=["POST"])
 def complete_booking_endpoint(booking_id):
-    """
-    Mark a booking as complete. Driver or admin calls this.
-    POST JSON: { "actual_duration_min": 25 }
-    """
+    """Mark a booking as complete."""
     data = request.get_json()
     actual_duration = data.get("actual_duration_min")
     if not actual_duration:
@@ -116,7 +99,6 @@ def check_admin():
 
 @app.route("/admin/dashboard")
 def admin_dashboard():
-    """Quick overview of everything — open in browser."""
     if not check_admin():
         return {"error": "Add ?key=YOUR_ADMIN_KEY to the URL"}, 401
 
@@ -128,6 +110,7 @@ def admin_dashboard():
         "bookings_total": conn.execute("SELECT COUNT(*) as c FROM bookings").fetchone()["c"],
         "bookings_completed": conn.execute("SELECT COUNT(*) as c FROM bookings WHERE status = 'completed'").fetchone()["c"],
         "bookings_confirmed": conn.execute("SELECT COUNT(*) as c FROM bookings WHERE status = 'confirmed'").fetchone()["c"],
+        "bookings_scheduled": conn.execute("SELECT COUNT(*) as c FROM bookings WHERE status = 'scheduled'").fetchone()["c"],
         "total_revenue": conn.execute("SELECT COALESCE(SUM(fare), 0) as total FROM bookings WHERE status = 'completed'").fetchone()["total"],
         "messages_total": conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"],
     }
@@ -140,7 +123,9 @@ def admin_customers():
     if not check_admin():
         return {"error": "Unauthorized"}, 401
     conn = db.get_connection()
-    rows = conn.execute("SELECT id, phone, name, created_at FROM customers ORDER BY id DESC").fetchall()
+    rows = conn.execute(
+        "SELECT id, phone, name, preferred_speed, driving_notes, created_at FROM customers ORDER BY id DESC"
+    ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -154,7 +139,9 @@ def admin_bookings():
         SELECT b.id, c.name as customer, c.phone,
                b.pickup_location as pickup, b.drop_location as dropoff,
                d.name as driver, b.status, b.distance_km, b.est_duration_min,
-               b.actual_duration_min, b.fare, b.booked_at, b.completed_at
+               b.actual_duration_min, b.fare,
+               b.travel_date, b.travel_time, b.driving_notes,
+               b.booked_at, b.completed_at
         FROM bookings b
         JOIN customers c ON b.customer_id = c.id
         LEFT JOIN drivers d ON b.driver_id = d.id
@@ -180,7 +167,6 @@ def admin_drivers():
 
 @app.route("/admin/conversations")
 def admin_conversations():
-    """View recent conversations. Add ?phone=+919876543210 to filter by customer."""
     if not check_admin():
         return {"error": "Unauthorized"}, 401
     phone = request.args.get("phone")
@@ -207,7 +193,6 @@ def admin_conversations():
 # ── Initialise DB and seed if empty ──
 db.init_db()
 
-# Auto-seed drivers if table is empty (first deploy)
 conn = db.get_connection()
 count = conn.execute("SELECT COUNT(*) as c FROM drivers").fetchone()["c"]
 conn.close()

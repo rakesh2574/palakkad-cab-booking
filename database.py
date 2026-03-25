@@ -1,13 +1,15 @@
 """
-Database schema and helpers for Palakkad Cab Booking App.
+Database schema and helpers for Kerala Cabs Booking App.
 Uses SQLite for simplicity — swap to PostgreSQL/MySQL for production.
+
+V2: Kerala-wide coverage, scheduled bookings, driving preferences.
 """
 
 import sqlite3
 import os
 from datetime import datetime
 
-DB_PATH = os.getenv("DB_PATH", "palakkad_cabs.db")
+DB_PATH = os.getenv("DB_PATH", "kerala_cabs.db")
 
 
 def get_connection():
@@ -30,12 +32,14 @@ def init_db():
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         phone           TEXT    UNIQUE NOT NULL,
         name            TEXT,
+        preferred_speed TEXT,
+        driving_notes   TEXT,
         created_at      TEXT    DEFAULT (datetime('now')),
         updated_at      TEXT    DEFAULT (datetime('now'))
     );
 
     -- ============================================================
-    -- DRIVERS
+    -- DRIVERS  (stationed across Kerala)
     -- ============================================================
     CREATE TABLE IF NOT EXISTS drivers (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +53,7 @@ def init_db():
     );
 
     -- ============================================================
-    -- BOOKINGS (now stores free-text locations, not foreign keys)
+    -- BOOKINGS  (free-text locations, scheduled date/time, notes)
     -- ============================================================
     CREATE TABLE IF NOT EXISTS bookings (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +66,9 @@ def init_db():
         est_duration_min    INTEGER,
         actual_duration_min INTEGER,
         fare                REAL,
+        travel_date         TEXT,
+        travel_time         TEXT,
+        driving_notes       TEXT,
         booked_at           TEXT    DEFAULT (datetime('now')),
         started_at          TEXT,
         completed_at        TEXT
@@ -79,9 +86,24 @@ def init_db():
     );
     """)
 
+    # --- Migrations for existing databases ---
+    # Add new columns if they don't exist (safe for fresh + existing DBs)
+    migrations = [
+        ("customers", "preferred_speed", "TEXT"),
+        ("customers", "driving_notes", "TEXT"),
+        ("bookings", "travel_date", "TEXT"),
+        ("bookings", "travel_time", "TEXT"),
+        ("bookings", "driving_notes", "TEXT"),
+    ]
+    for table, column, col_type in migrations:
+        try:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
     conn.commit()
     conn.close()
-    print("✅ Database initialised.")
+    print("✅ Database initialised (Kerala Cabs v2).")
 
 
 # -----------------------------------------------------------------
@@ -116,6 +138,23 @@ def update_customer_name(phone: str, name: str):
     conn.close()
 
 
+def update_customer_preferences(phone: str, preferred_speed: str = None, driving_notes: str = None):
+    """Update customer's driving preferences for future context."""
+    conn = get_connection()
+    if preferred_speed:
+        conn.execute(
+            "UPDATE customers SET preferred_speed = ?, updated_at = datetime('now') WHERE phone = ?",
+            (preferred_speed, phone),
+        )
+    if driving_notes:
+        conn.execute(
+            "UPDATE customers SET driving_notes = ?, updated_at = datetime('now') WHERE phone = ?",
+            (driving_notes, phone),
+        )
+    conn.commit()
+    conn.close()
+
+
 def log_conversation(customer_id: int, direction: str, message: str):
     conn = get_connection()
     conn.execute(
@@ -136,22 +175,36 @@ def find_available_driver():
     return dict(row) if row else None
 
 
-def create_booking(customer_id, driver_id, pickup_location, drop_location, distance_km, est_duration_min):
+def create_booking(customer_id, driver_id, pickup_location, drop_location,
+                   distance_km, est_duration_min,
+                   travel_date=None, travel_time=None, driving_notes=None):
+    """Create a booking — supports immediate or future-dated rides."""
     conn = get_connection()
     cur = conn.cursor()
+
+    # For future bookings, don't mark driver as busy yet
+    is_future = travel_date is not None and travel_date.strip() != ""
+    status = "scheduled" if is_future else "confirmed"
+
     cur.execute(
         """INSERT INTO bookings
            (customer_id, driver_id, pickup_location, drop_location,
-            status, distance_km, est_duration_min)
-           VALUES (?, ?, ?, ?, 'confirmed', ?, ?)""",
-        (customer_id, driver_id, pickup_location, drop_location, distance_km, est_duration_min),
+            status, distance_km, est_duration_min,
+            travel_date, travel_time, driving_notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (customer_id, driver_id, pickup_location, drop_location,
+         status, distance_km, est_duration_min,
+         travel_date, travel_time, driving_notes),
     )
     booking_id = cur.lastrowid
-    # Mark driver busy
-    conn.execute("UPDATE drivers SET is_available = 0 WHERE id = ?", (driver_id,))
+
+    # Only mark driver busy for immediate rides
+    if not is_future:
+        conn.execute("UPDATE drivers SET is_available = 0 WHERE id = ?", (driver_id,))
+
     conn.commit()
     conn.close()
-    return booking_id
+    return booking_id, status
 
 
 def complete_booking(booking_id: int, actual_duration_min: int, rate_per_min: float = 8.0):
@@ -188,6 +241,37 @@ def get_customer_bookings(customer_id: int, limit: int = 5):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_customer_frequent_routes(customer_id: int, limit: int = 3):
+    """Get most frequently booked routes for smart rebooking suggestions."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT pickup_location, drop_location, COUNT(*) as trip_count,
+                  ROUND(AVG(distance_km), 1) as avg_distance,
+                  ROUND(AVG(est_duration_min)) as avg_duration
+           FROM bookings
+           WHERE customer_id = ? AND status IN ('completed', 'confirmed', 'scheduled')
+           GROUP BY pickup_location, drop_location
+           ORDER BY trip_count DESC
+           LIMIT ?""",
+        (customer_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def cancel_booking(booking_id: int):
+    """Cancel a booking and free the driver."""
+    conn = get_connection()
+    row = conn.execute("SELECT driver_id, status FROM bookings WHERE id = ?", (booking_id,)).fetchone()
+    if row:
+        conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
+        # Free driver only if booking was confirmed (not scheduled)
+        if row["status"] == "confirmed":
+            conn.execute("UPDATE drivers SET is_available = 1 WHERE id = ?", (row["driver_id"],))
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
