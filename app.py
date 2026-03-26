@@ -237,7 +237,7 @@ def admin_pins():
     return jsonify(pins)
 
 
-@app.route("/admin/pins/create", methods=["POST"])
+@app.route("/admin/pins/create", methods=["GET", "POST"])
 def admin_create_pin():
     """
     Create a new access PIN.
@@ -271,7 +271,7 @@ def admin_create_pin():
         return {"error": "PIN already exists"}, 409
 
 
-@app.route("/admin/pins/<int:pin_id>/deactivate", methods=["POST"])
+@app.route("/admin/pins/<int:pin_id>/deactivate", methods=["GET", "POST"])
 def admin_deactivate_pin(pin_id):
     """Deactivate a PIN so it can't be used anymore."""
     if not check_admin():
@@ -280,7 +280,7 @@ def admin_deactivate_pin(pin_id):
     return {"status": "deactivated", "pin_id": pin_id}
 
 
-@app.route("/admin/activate", methods=["POST"])
+@app.route("/admin/activate", methods=["GET", "POST"])
 def admin_activate_customer():
     """
     Manually activate a customer (bypass PIN).
