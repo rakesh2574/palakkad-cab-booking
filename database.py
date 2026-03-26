@@ -34,6 +34,8 @@ def init_db():
         name            TEXT,
         preferred_speed TEXT,
         driving_notes   TEXT,
+        is_activated    INTEGER DEFAULT 0,
+        activated_at    TEXT,
         created_at      TEXT    DEFAULT (datetime('now')),
         updated_at      TEXT    DEFAULT (datetime('now'))
     );
@@ -84,6 +86,19 @@ def init_db():
         message         TEXT    NOT NULL,
         created_at      TEXT    DEFAULT (datetime('now'))
     );
+
+    -- ============================================================
+    -- ACCESS PINS  (PIN-based access control)
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS access_pins (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        pin             TEXT    UNIQUE NOT NULL,
+        label           TEXT,
+        max_uses        INTEGER DEFAULT 1,
+        used_count      INTEGER DEFAULT 0,
+        is_active       INTEGER DEFAULT 1,
+        created_at      TEXT    DEFAULT (datetime('now'))
+    );
     """)
 
     # --- Migrations for existing databases ---
@@ -91,6 +106,8 @@ def init_db():
     migrations = [
         ("customers", "preferred_speed", "TEXT"),
         ("customers", "driving_notes", "TEXT"),
+        ("customers", "is_activated", "INTEGER DEFAULT 0"),
+        ("customers", "activated_at", "TEXT"),
         ("bookings", "travel_date", "TEXT"),
         ("bookings", "travel_time", "TEXT"),
         ("bookings", "driving_notes", "TEXT"),
@@ -270,6 +287,98 @@ def cancel_booking(booking_id: int):
         # Free driver only if booking was confirmed (not scheduled)
         if row["status"] == "confirmed":
             conn.execute("UPDATE drivers SET is_available = 1 WHERE id = ?", (row["driver_id"],))
+    conn.commit()
+    conn.close()
+
+
+# -----------------------------------------------------------------
+# PIN-based access control
+# -----------------------------------------------------------------
+
+def is_customer_activated(phone: str) -> bool:
+    """Check if a customer has activated their account with a PIN."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT is_activated FROM customers WHERE phone = ?", (phone,)
+    ).fetchone()
+    conn.close()
+    if row and row["is_activated"] == 1:
+        return True
+    return False
+
+
+def try_activate_with_pin(phone: str, pin_text: str) -> str:
+    """
+    Try to activate a customer using a PIN code.
+    Returns: 'activated', 'invalid_pin', 'pin_exhausted', or 'already_active'.
+    """
+    conn = get_connection()
+
+    # Check if already activated
+    cust = conn.execute("SELECT is_activated FROM customers WHERE phone = ?", (phone,)).fetchone()
+    if cust and cust["is_activated"] == 1:
+        conn.close()
+        return "already_active"
+
+    # Look up the PIN
+    pin_row = conn.execute(
+        "SELECT * FROM access_pins WHERE pin = ? AND is_active = 1", (pin_text.strip().upper(),)
+    ).fetchone()
+
+    if not pin_row:
+        conn.close()
+        return "invalid_pin"
+
+    # Check usage limit
+    if pin_row["used_count"] >= pin_row["max_uses"]:
+        conn.close()
+        return "pin_exhausted"
+
+    # Activate the customer
+    conn.execute(
+        "UPDATE customers SET is_activated = 1, activated_at = datetime('now'), updated_at = datetime('now') WHERE phone = ?",
+        (phone,),
+    )
+    # Increment PIN usage
+    conn.execute(
+        "UPDATE access_pins SET used_count = used_count + 1 WHERE id = ?",
+        (pin_row["id"],),
+    )
+    conn.commit()
+    conn.close()
+    return "activated"
+
+
+def create_access_pin(pin: str, label: str = None, max_uses: int = 1):
+    """Create a new access PIN (admin function)."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO access_pins (pin, label, max_uses) VALUES (?, ?, ?)",
+            (pin.strip().upper(), label, max_uses),
+        )
+        conn.commit()
+    except Exception:
+        conn.close()
+        return False
+    conn.close()
+    return True
+
+
+def list_access_pins():
+    """List all PINs with usage stats."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, pin, label, max_uses, used_count, is_active, created_at FROM access_pins ORDER BY id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def deactivate_pin(pin_id: int):
+    """Deactivate a PIN so it can't be used anymore."""
+    conn = get_connection()
+    conn.execute("UPDATE access_pins SET is_active = 0 WHERE id = ?", (pin_id,))
     conn.commit()
     conn.close()
 
