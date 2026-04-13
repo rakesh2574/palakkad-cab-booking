@@ -276,7 +276,7 @@ def fish_inventory_upload():
     if not f.filename.lower().endswith((".xlsx", ".xlsm")):
         return {"error": "only .xlsx/.xlsm supported"}, 400
     import tempfile
-    inv_date = request.form.get("date")
+    inv_date = request.form.get("date") or None
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         f.save(tmp.name)
         path = tmp.name
