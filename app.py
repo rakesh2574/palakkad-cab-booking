@@ -16,6 +16,12 @@ from twilio.rest import Client as TwilioClient
 import database as db
 import ai_agent
 
+# Fish hub (optional second service; shares same DB)
+from fish import ai_agent as fish_agent
+from fish import database as fish_db
+from fish import seed_data as fish_seed
+from fish import inventory_upload as fish_upload
+
 app = Flask(__name__)
 
 # Twilio credentials
@@ -51,14 +57,22 @@ def whatsapp_webhook():
         result = db.try_activate_with_pin(phone, incoming_msg)
 
         if result == "activated":
-            reply_text = (
-                "✅ *Access Activated!* Welcome to Kerala Cabs! 🚕\n\n"
-                "I'm Niveditha, your friendly cab booking assistant. "
-                "I can help you book rides anywhere in Kerala!\n\n"
-                "What's your name? 😊"
-            )
+            service = db.get_customer_service(phone)
+            if service == "fish":
+                reply_text = (
+                    "✅ *Access Activated!* Welcome to the Fish Hub! 🐟\n\n"
+                    "I'm Mohanan chettan — I bring the freshest catch from the harbour every morning.\n"
+                    "Reply 'menu' to see today's fresh fish."
+                )
+            else:
+                reply_text = (
+                    "✅ *Access Activated!* Welcome to Kerala Cabs! 🚕\n\n"
+                    "I'm Niveditha, your friendly cab booking assistant. "
+                    "I can help you book rides anywhere in Kerala!\n\n"
+                    "What's your name? 😊"
+                )
         elif result == "already_active":
-            reply_text = ai_agent.process_message(phone, incoming_msg)
+            reply_text = _dispatch_by_service(phone, incoming_msg)
         elif result == "pin_exhausted":
             reply_text = (
                 "⚠️ This access code has already been used to its limit. "
@@ -66,7 +80,7 @@ def whatsapp_webhook():
             )
         else:
             reply_text = (
-                "🔒 *Kerala Cabs — Access Required*\n\n"
+                "🔒 *Access Required*\n\n"
                 "Welcome! This is an invite-only service.\n"
                 "Please send your *access code* to get started.\n\n"
                 "Don't have a code? Contact the admin to get one."
@@ -77,8 +91,8 @@ def whatsapp_webhook():
         resp.message(reply_text)
         return str(resp), 200, {"Content-Type": "text/xml"}
 
-    # ── Customer is activated — process normally ──
-    reply_text = ai_agent.process_message(phone, incoming_msg)
+    # ── Customer is activated — dispatch by service ──
+    reply_text = _dispatch_by_service(phone, incoming_msg)
 
     print(f"📤 Reply to {phone}: {reply_text}")
 
@@ -228,6 +242,95 @@ def admin_conversations():
     return jsonify([dict(r) for r in rows])
 
 
+# ──────────────────────────────────────────────────────────────
+# Service dispatcher — routes an activated customer to cab bot
+# (Niveditha) or fish hub bot (Mohanan Chettan) based on their PIN.
+# ──────────────────────────────────────────────────────────────
+def _dispatch_by_service(phone: str, incoming_msg: str) -> str:
+    service = db.get_customer_service(phone)
+    if service == "fish":
+        return fish_agent.process_message(phone, incoming_msg)
+    return ai_agent.process_message(phone, incoming_msg)
+
+
+# ──────────────────────────────────────────────────────────────
+# FISH HUB admin endpoints (inventory upload, view orders, etc.)
+# ──────────────────────────────────────────────────────────────
+@app.route("/admin/fish/inventory", methods=["GET"])
+def fish_inventory_view():
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    from datetime import date as _date
+    d = request.args.get("date") or _date.today().isoformat()
+    return jsonify({"date": d, "items": fish_db.get_today_inventory(d)})
+
+
+@app.route("/admin/fish/inventory/upload", methods=["POST"])
+def fish_inventory_upload():
+    """Upload daily inventory .xlsx (multipart form field 'file')."""
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    if "file" not in request.files:
+        return {"error": "file required (multipart field 'file')"}, 400
+    f = request.files["file"]
+    if not f.filename.lower().endswith((".xlsx", ".xlsm")):
+        return {"error": "only .xlsx/.xlsm supported"}, 400
+    import tempfile
+    inv_date = request.form.get("date")
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        f.save(tmp.name)
+        path = tmp.name
+    try:
+        fish_db.init_fish_tables()
+        if not fish_db.get_fish_catalog():
+            fish_seed.seed_fish_catalog()
+        result = fish_upload.parse_and_load(path, inv_date)
+    except Exception as e:
+        return {"error": str(e)}, 500
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+    return jsonify(result)
+
+
+@app.route("/admin/fish/inventory/upload_form", methods=["GET"])
+def fish_inventory_upload_form():
+    """Tiny HTML page to upload the daily xlsx from a browser."""
+    if not check_admin():
+        return "<p>Unauthorized</p>", 401
+    key = request.args.get("key", "")
+    html = f"""
+    <!doctype html><html><body style='font-family:sans-serif;max-width:600px;margin:2em auto;'>
+    <h2>🐟 Upload Today's Fish Inventory</h2>
+    <p>Expected columns: <b>Fish Name | Available Kg | Price Per Kg | Notes</b></p>
+    <form method='post' action='/admin/fish/inventory/upload?key={key}' enctype='multipart/form-data'>
+      <p>Date (blank = today): <input name='date' placeholder='YYYY-MM-DD'></p>
+      <p><input type='file' name='file' accept='.xlsx' required></p>
+      <p><button type='submit'>Upload</button></p>
+    </form>
+    </body></html>
+    """
+    return html
+
+
+@app.route("/admin/fish/orders")
+def fish_orders_view():
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    return jsonify(fish_db.list_all_orders(limit=500))
+
+
+@app.route("/admin/fish/seed", methods=["GET", "POST"])
+def fish_seed_catalog():
+    """One-time: seed the fish catalog (14 Kerala fish types)."""
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+    n = fish_seed.seed_fish_catalog()
+    return {"status": "seeded", "catalog_count": n}
+
+
 @app.route("/admin/pins")
 def admin_pins():
     """View all access PINs and their usage."""
@@ -255,18 +358,23 @@ def admin_create_pin():
             "pin": request.args.get("pin", ""),
             "label": request.args.get("label", ""),
             "max_uses": request.args.get("max_uses", "1"),
+            "service": request.args.get("service", "cab"),
         }
 
     pin = data.get("pin", "").strip()
-    label = data.get("label", "").strip() or None
+    label = (data.get("label", "") or "").strip() or None
     max_uses = int(data.get("max_uses", 1))
+    service = (data.get("service", "cab") or "cab").strip().lower()
+    if service not in ("cab", "fish"):
+        return {"error": "service must be 'cab' or 'fish'"}, 400
 
     if not pin:
         return {"error": "pin is required"}, 400
 
-    success = db.create_access_pin(pin, label, max_uses)
+    success = db.create_access_pin(pin, label, max_uses, service)
     if success:
-        return {"status": "created", "pin": pin.upper(), "label": label, "max_uses": max_uses}, 201
+        return {"status": "created", "pin": pin.upper(), "label": label,
+                "max_uses": max_uses, "service": service}, 201
     else:
         return {"error": "PIN already exists"}, 409
 
@@ -312,6 +420,7 @@ def admin_activate_customer():
 
 # ── Initialise DB and seed if empty ──
 db.init_db()
+fish_db.init_fish_tables()  # add fish tables to same DB
 
 conn = db.get_connection()
 count = conn.execute("SELECT COUNT(*) as c FROM drivers").fetchone()["c"]
@@ -319,6 +428,10 @@ conn.close()
 if count == 0:
     import seed_data
     seed_data.seed()
+
+# Seed fish catalog if empty
+if not fish_db.get_fish_catalog():
+    fish_seed.seed_fish_catalog()
 
 
 if __name__ == "__main__":

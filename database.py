@@ -108,9 +108,11 @@ def init_db():
         ("customers", "driving_notes", "TEXT"),
         ("customers", "is_activated", "INTEGER DEFAULT 0"),
         ("customers", "activated_at", "TEXT"),
+        ("customers", "service", "TEXT DEFAULT 'cab'"),
         ("bookings", "travel_date", "TEXT"),
         ("bookings", "travel_time", "TEXT"),
         ("bookings", "driving_notes", "TEXT"),
+        ("access_pins", "service", "TEXT DEFAULT 'cab'"),
     ]
     for table, column, col_type in migrations:
         try:
@@ -334,10 +336,11 @@ def try_activate_with_pin(phone: str, pin_text: str) -> str:
         conn.close()
         return "pin_exhausted"
 
-    # Activate the customer
+    # Activate the customer — also copy PIN's service onto the customer record
+    pin_service = pin_row["service"] if "service" in pin_row.keys() else "cab"
     conn.execute(
-        "UPDATE customers SET is_activated = 1, activated_at = datetime('now'), updated_at = datetime('now') WHERE phone = ?",
-        (phone,),
+        "UPDATE customers SET is_activated = 1, activated_at = datetime('now'), updated_at = datetime('now'), service = ? WHERE phone = ?",
+        (pin_service or "cab", phone),
     )
     # Increment PIN usage
     conn.execute(
@@ -349,13 +352,15 @@ def try_activate_with_pin(phone: str, pin_text: str) -> str:
     return "activated"
 
 
-def create_access_pin(pin: str, label: str = None, max_uses: int = 1):
-    """Create a new access PIN (admin function)."""
+def create_access_pin(pin: str, label: str = None, max_uses: int = 1, service: str = "cab"):
+    """Create a new access PIN (admin function). service = 'cab' or 'fish'."""
+    if service not in ("cab", "fish"):
+        service = "cab"
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO access_pins (pin, label, max_uses) VALUES (?, ?, ?)",
-            (pin.strip().upper(), label, max_uses),
+            "INSERT INTO access_pins (pin, label, max_uses, service) VALUES (?, ?, ?, ?)",
+            (pin.strip().upper(), label, max_uses, service),
         )
         conn.commit()
     except Exception:
@@ -365,11 +370,21 @@ def create_access_pin(pin: str, label: str = None, max_uses: int = 1):
     return True
 
 
+def get_customer_service(phone: str) -> str:
+    """Return the service ('cab' or 'fish') this customer is bound to. Defaults to 'cab'."""
+    conn = get_connection()
+    row = conn.execute("SELECT service FROM customers WHERE phone = ?", (phone,)).fetchone()
+    conn.close()
+    if row and row["service"]:
+        return row["service"]
+    return "cab"
+
+
 def list_access_pins():
     """List all PINs with usage stats."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, pin, label, max_uses, used_count, is_active, created_at FROM access_pins ORDER BY id DESC"
+        "SELECT id, pin, label, max_uses, used_count, is_active, service, created_at FROM access_pins ORDER BY id DESC"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
