@@ -6,12 +6,28 @@ Uses the shared SQLite DB for customer identity; fish-specific tables for invent
 import os
 import json
 import sys
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from openai import OpenAI
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import database as cabdb  # noqa: E402
 from . import database as fdb
+
+
+# Kerala runs on IST; Railway runs in UTC. Use IST consistently for inventory + slots.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist():
+    return datetime.now(IST)
+
+
+def today_ist_iso():
+    return now_ist().date().isoformat()
+
+
+def tomorrow_ist_iso():
+    return (now_ist().date() + timedelta(days=1)).isoformat()
 
 
 _client = None
@@ -32,9 +48,9 @@ DELIVERY_SLOTS = [
 
 
 def available_slots_for_now():
-    now = datetime.now()
-    today = date.today().isoformat()
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    now = now_ist()
+    today = today_ist_iso()
+    tomorrow = tomorrow_ist_iso()
     out = []
     for s in DELIVERY_SLOTS:
         if s["code"] == "today_evening" and now.hour >= s["cutoff_hour"]:
@@ -95,7 +111,7 @@ Keep replies short (2-4 lines). WhatsApp style. Warm but efficient.
 
 def build_context(phone):
     customer = cabdb.get_or_create_customer(phone)
-    today_iso = date.today().isoformat()
+    today_iso = today_ist_iso()
     inventory = fdb.get_today_inventory(today_iso)
     orders = fdb.get_customer_orders(phone, limit=5)
     favourites = fdb.get_customer_favourite_fish(phone)
@@ -104,7 +120,7 @@ def build_context(phone):
 
     lines = [
         f"TODAY'S DATE: {today_iso}",
-        f"CURRENT TIME: {datetime.now().strftime('%H:%M')}",
+        f"CURRENT TIME: {now_ist().strftime('%H:%M')} IST",
         "",
         "CUSTOMER INFO:",
         f"- Phone: {phone}",
@@ -235,8 +251,8 @@ def _place(phone, data):
     if not slot:
         return f"(Unknown delivery slot '{slot_code}'.)"
 
-    today_iso = date.today().isoformat()
-    tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
+    today_iso = today_ist_iso()
+    tomorrow_iso = tomorrow_ist_iso()
     delivery_date = today_iso if slot_code == "today_evening" else tomorrow_iso
 
     inv = fdb.get_today_inventory(today_iso)

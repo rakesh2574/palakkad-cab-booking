@@ -4,9 +4,17 @@ Parse a daily inventory .xlsx upload and insert rows into fish_inventory.
 Expected columns (header row): Fish Name | Available Kg | Price Per Kg | Notes
 """
 
-from datetime import date
+from datetime import datetime, timezone, timedelta
 from openpyxl import load_workbook
 from . import database as fdb
+
+
+# Kerala is IST (UTC+5:30). Railway runs in UTC, so we fix the timezone here.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def today_ist_iso():
+    return datetime.now(IST).date().isoformat()
 
 
 REQUIRED_COLS = ["fish name", "available kg", "price per kg"]
@@ -19,7 +27,7 @@ def _norm(s):
 
 def parse_and_load(xlsx_path, inventory_date=None):
     if inventory_date is None:
-        inventory_date = date.today().isoformat()
+        inventory_date = today_ist_iso()
 
     wb = load_workbook(xlsx_path, data_only=True)
     ws = wb.active

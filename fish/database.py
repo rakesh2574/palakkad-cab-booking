@@ -4,11 +4,19 @@ Adds ONLY fish-specific tables. Re-uses customers + access_pins from cab databas
 """
 
 import sys, os
-from datetime import date
+from datetime import datetime, timedelta, timezone
 
 # Re-use cab booking's connection helper so both modules hit the same DB file
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import database as cabdb  # noqa: E402
+
+
+# Kerala IST (Railway runs in UTC)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _today_ist_iso():
+    return datetime.now(IST).date().isoformat()
 
 
 def init_fish_tables():
@@ -112,7 +120,7 @@ def upsert_inventory(inventory_date, fish_name, available_kg, price_per_kg, note
 
 def get_today_inventory(inventory_date=None):
     if inventory_date is None:
-        inventory_date = date.today().isoformat()
+        inventory_date = _today_ist_iso()
     conn = cabdb.get_connection()
     rows = conn.execute(
         """SELECT i.*, c.malayalam_name, c.speciality
