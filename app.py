@@ -420,7 +420,7 @@ def admin_activate_customer():
 
 def _normalize_whatsapp_phone(raw: str) -> str:
     """Accept phones typed as 'whatsapp:+919...', 'whatsapp: 919...' (browser-decoded),
-    '+919...', or '919...' and return canonical 'whatsapp:+919...'."""
+    '+919...', or '919...' and return canonical '+919...' (matches how cab app stores phones)."""
     s = (raw or "").strip()
     if s.startswith("whatsapp:"):
         s = s[len("whatsapp:"):].strip()
@@ -428,7 +428,7 @@ def _normalize_whatsapp_phone(raw: str) -> str:
     s = s.replace(" ", "")
     if not s.startswith("+"):
         s = "+" + s
-    return "whatsapp:" + s
+    return s
 
 
 @app.route("/admin/customer/reset", methods=["GET", "POST"])
