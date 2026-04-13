@@ -418,6 +418,37 @@ def admin_activate_customer():
     return {"status": "activated", "phone": phone}
 
 
+@app.route("/admin/customer/reset", methods=["GET", "POST"])
+def admin_reset_customer():
+    """
+    Reset a customer so the next WhatsApp message asks for a PIN again.
+    Clears is_activated + service so they can switch between cab and fish.
+    Usage: /admin/customer/reset?key=ADMIN_KEY&phone=whatsapp:+91XXXXXXXXXX
+    """
+    if not check_admin():
+        return {"error": "Unauthorized"}, 401
+
+    if request.is_json:
+        phone = request.get_json().get("phone", "")
+    else:
+        phone = request.args.get("phone", "")
+
+    if not phone:
+        return {"error": "phone is required"}, 400
+
+    conn = db.get_connection()
+    cur = conn.execute(
+        "UPDATE customers SET is_activated = 0, activated_at = NULL, service = 'cab', updated_at = datetime('now') WHERE phone = ?",
+        (phone,),
+    )
+    affected = cur.rowcount
+    conn.commit()
+    conn.close()
+    if affected == 0:
+        return {"status": "no_such_customer", "phone": phone}, 404
+    return {"status": "reset", "phone": phone, "note": "Next message will prompt for PIN"}
+
+
 # ── Initialise DB and seed if empty ──
 db.init_db()
 fish_db.init_fish_tables()  # add fish tables to same DB
