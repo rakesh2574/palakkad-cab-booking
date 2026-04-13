@@ -418,23 +418,39 @@ def admin_activate_customer():
     return {"status": "activated", "phone": phone}
 
 
+def _normalize_whatsapp_phone(raw: str) -> str:
+    """Accept phones typed as 'whatsapp:+919...', 'whatsapp: 919...' (browser-decoded),
+    '+919...', or '919...' and return canonical 'whatsapp:+919...'."""
+    s = (raw or "").strip()
+    if s.startswith("whatsapp:"):
+        s = s[len("whatsapp:"):].strip()
+    # Browsers decode '+' as ' ' in query strings, so restore it
+    s = s.replace(" ", "")
+    if not s.startswith("+"):
+        s = "+" + s
+    return "whatsapp:" + s
+
+
 @app.route("/admin/customer/reset", methods=["GET", "POST"])
 def admin_reset_customer():
     """
     Reset a customer so the next WhatsApp message asks for a PIN again.
     Clears is_activated + service so they can switch between cab and fish.
-    Usage: /admin/customer/reset?key=ADMIN_KEY&phone=whatsapp:+91XXXXXXXXXX
+    Usage: /admin/customer/reset?key=ADMIN_KEY&phone=919XXXXXXXXX
+           (accepts 919..., +919..., whatsapp:+919..., etc.)
     """
     if not check_admin():
         return {"error": "Unauthorized"}, 401
 
     if request.is_json:
-        phone = request.get_json().get("phone", "")
+        raw = request.get_json().get("phone", "")
     else:
-        phone = request.args.get("phone", "")
+        raw = request.args.get("phone", "")
 
-    if not phone:
+    if not raw:
         return {"error": "phone is required"}, 400
+
+    phone = _normalize_whatsapp_phone(raw)
 
     conn = db.get_connection()
     cur = conn.execute(
@@ -445,7 +461,7 @@ def admin_reset_customer():
     conn.commit()
     conn.close()
     if affected == 0:
-        return {"status": "no_such_customer", "phone": phone}, 404
+        return {"status": "no_such_customer", "phone_tried": phone, "raw_input": raw}, 404
     return {"status": "reset", "phone": phone, "note": "Next message will prompt for PIN"}
 
 
