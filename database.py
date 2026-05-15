@@ -113,6 +113,18 @@ def init_db():
         ("bookings", "travel_time", "TEXT"),
         ("bookings", "driving_notes", "TEXT"),
         ("access_pins", "service", "TEXT DEFAULT 'cab'"),
+        # V3: enhanced booking fields
+        ("bookings", "trip_type", "TEXT DEFAULT 'one_way'"),       # one_way / round_trip / full_day
+        ("bookings", "booking_type", "TEXT DEFAULT 'point_to_point'"),  # point_to_point / hourly / full_day / vehicle_pickup
+        ("bookings", "report_time", "TEXT"),                       # when driver should report (e.g. 06:00)
+        ("bookings", "event_time", "TEXT"),                        # customer's event time (flight, appointment)
+        ("bookings", "end_time", "TEXT"),                          # expected end time for full-day/hourly
+        ("bookings", "contact_name", "TEXT"),                      # third-party contact at location
+        ("bookings", "contact_phone", "TEXT"),                     # third-party contact phone(s)
+        ("bookings", "stops", "TEXT"),                             # JSON array of intermediate stops
+        ("bookings", "vehicle_info", "TEXT"),                      # car model/reg for vehicle pickup jobs
+        ("bookings", "special_notes", "TEXT"),                     # e-pass, documents, urgency markers
+        ("bookings", "reminder_time", "TEXT"),                     # requested reminder time
     ]
     for table, column, col_type in migrations:
         try:
@@ -196,8 +208,14 @@ def find_available_driver():
 
 def create_booking(customer_id, driver_id, pickup_location, drop_location,
                    distance_km, est_duration_min,
-                   travel_date=None, travel_time=None, driving_notes=None):
-    """Create a booking — supports immediate or future-dated rides."""
+                   travel_date=None, travel_time=None, driving_notes=None,
+                   trip_type="one_way", booking_type="point_to_point",
+                   report_time=None, event_time=None, end_time=None,
+                   contact_name=None, contact_phone=None,
+                   stops=None, vehicle_info=None, special_notes=None,
+                   reminder_time=None):
+    """Create a booking — supports immediate, future-dated, round trips, full-day, vehicle pickup, etc."""
+    import json as _json
     conn = get_connection()
     cur = conn.cursor()
 
@@ -205,15 +223,24 @@ def create_booking(customer_id, driver_id, pickup_location, drop_location,
     is_future = travel_date is not None and travel_date.strip() != ""
     status = "scheduled" if is_future else "confirmed"
 
+    # Serialize stops list to JSON if provided
+    stops_json = _json.dumps(stops) if stops and isinstance(stops, list) else stops
+
     cur.execute(
         """INSERT INTO bookings
            (customer_id, driver_id, pickup_location, drop_location,
             status, distance_km, est_duration_min,
-            travel_date, travel_time, driving_notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            travel_date, travel_time, driving_notes,
+            trip_type, booking_type, report_time, event_time, end_time,
+            contact_name, contact_phone, stops, vehicle_info, special_notes,
+            reminder_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (customer_id, driver_id, pickup_location, drop_location,
          status, distance_km, est_duration_min,
-         travel_date, travel_time, driving_notes),
+         travel_date, travel_time, driving_notes,
+         trip_type, booking_type, report_time, event_time, end_time,
+         contact_name, contact_phone, stops_json, vehicle_info, special_notes,
+         reminder_time),
     )
     booking_id = cur.lastrowid
 

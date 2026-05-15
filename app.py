@@ -66,10 +66,10 @@ def whatsapp_webhook():
                 )
             else:
                 reply_text = (
-                    "✅ *Access Activated!* Welcome to Kerala Cabs! 🚕\n\n"
-                    "I'm Niveditha, your friendly cab booking assistant. "
-                    "I can help you book rides anywhere in Kerala!\n\n"
-                    "What's your name? 😊"
+                    "✅ *Access Activated!* Welcome! 🚗\n\n"
+                    "Hi, I'm Vignesh — I run the driver-on-demand service here in Palakkad. "
+                    "Need a driver anywhere in Kerala or nearby? Just tell me where and when!\n\n"
+                    "What's your name?"
                 )
         elif result == "already_active":
             reply_text = _dispatch_by_service(phone, incoming_msg)
@@ -193,6 +193,9 @@ def admin_bookings():
                d.name as driver, b.status, b.distance_km, b.est_duration_min,
                b.actual_duration_min, b.fare,
                b.travel_date, b.travel_time, b.driving_notes,
+               b.trip_type, b.booking_type, b.report_time, b.event_time,
+               b.end_time, b.contact_name, b.contact_phone,
+               b.stops, b.vehicle_info, b.special_notes, b.reminder_time,
                b.booked_at, b.completed_at
         FROM bookings b
         JOIN customers c ON b.customer_id = c.id
@@ -244,7 +247,7 @@ def admin_conversations():
 
 # ──────────────────────────────────────────────────────────────
 # Service dispatcher — routes an activated customer to cab bot
-# (Niveditha) or fish hub bot (Mohanan Chettan) based on their PIN.
+# (Vignesh) or fish hub bot (Mohanan Chettan) based on their PIN.
 # ──────────────────────────────────────────────────────────────
 def _dispatch_by_service(phone: str, incoming_msg: str) -> str:
     service = db.get_customer_service(phone)
