@@ -38,15 +38,29 @@ def _build_system_prompt():
     day_name = now_ist.strftime("%A")
     time_str = now_ist.strftime("%H:%M")
 
+    # Build upcoming weekday map for "next Sunday", "this Friday" etc.
+    weekday_map_lines = []
+    for i in range(14):  # next 14 days
+        d = now_ist + timedelta(days=i)
+        label = "today" if i == 0 else "tomorrow" if i == 1 else ""
+        weekday_map_lines.append(f"  {d.strftime('%A')} {d.strftime('%Y-%m-%d')}{f' ({label})' if label else ''}")
+    weekday_map = "\n".join(weekday_map_lines)
+
     return f"""You are *Vignesh*, the owner of a driver-on-demand service based in Palakkad, Kerala 🚗.
 Customers message you directly on WhatsApp to book drivers. You're like their trusted go-to person for all driver needs.
 
 TODAY'S DATE: {today_str} ({day_name}), Current time: {time_str} IST.
 TOMORROW'S DATE: {tomorrow_str}
+
+UPCOMING DAYS (use this to resolve "next Sunday", "this Friday", "varunna Monday", etc.):
+{weekday_map}
+
 Use this to correctly interpret dates:
 - "today"/"innu" = {today_str}
 - "tomorrow"/"nale"/"naale" = {tomorrow_str}
 - "day after"/"marranne divasam" = {day_after_str}
+- "next [weekday]" / "varunna [weekday]" / "this [weekday]" → look up the UPCOMING DAYS table above
+- "adutha aazhcha" / "next week" → the Monday of next week from the table above
 CRITICAL: "nale" ALWAYS means {tomorrow_str}, NEVER {today_str}. Double-check your date!
 
 CRITICAL IDENTITY RULES:
@@ -456,11 +470,12 @@ def _compute_route_data(action_data: dict) -> dict:
         else:
             print(f"⚠️ Route API failed for {from_name} → {to_name}, using GPT estimate")
 
-    # For ghat/mountain routes, add 40% to ORS duration (it severely underestimates)
+    # For ghat/mountain routes, add 80% to ORS duration (it severely underestimates
+    # hairpin bends, steep gradients, slow trucks, fog on ghat roads)
     if is_ghat and route_source == "openrouteservice":
         original = est_duration
-        est_duration = int(est_duration * 1.4)
-        print(f"⛰️ Ghat route detected! Duration adjusted: {original}min → {est_duration}min (+40%)")
+        est_duration = int(est_duration * 1.8)
+        print(f"⛰️ Ghat route detected! Duration adjusted: {original}min → {est_duration}min (+80%)")
 
     # Add buffer (30 min default) to duration for real-world conditions
     est_duration_with_buffer = est_duration + BUFFER_MINUTES
@@ -489,15 +504,21 @@ def _compute_route_data(action_data: dict) -> dict:
         est_fare = round(RATE_PER_MIN * max(est_duration_with_buffer, 480), 2)
 
     # Calculate suggested report time if customer gave arrival (event) time
+    # Driver should arrive 15 min BEFORE calculated departure for loading/prep
+    DRIVER_EARLY_BUFFER = 15
     suggested_report_time = None
     if event_time and est_duration:
         try:
             from datetime import datetime, timedelta
             evt = datetime.strptime(event_time, "%H:%M")
-            # Driver should leave: arrival_time minus travel_duration minus buffer
+            # departure = arrival_time - travel_duration - buffer
             depart = evt - timedelta(minutes=est_duration + BUFFER_MINUTES)
-            suggested_report_time = depart.strftime("%H:%M")
-            print(f"🕐 Event at {event_time}, travel {est_duration}min + {BUFFER_MINUTES}min buffer → driver report at {suggested_report_time}")
+            # driver arrives 15 min before departure, rounded down to nearest 5 min
+            report = depart - timedelta(minutes=DRIVER_EARLY_BUFFER)
+            # Round down to nearest 5 minutes
+            report = report.replace(minute=(report.minute // 5) * 5)
+            suggested_report_time = report.strftime("%H:%M")
+            print(f"🕐 Event at {event_time}, travel {est_duration}min + {BUFFER_MINUTES}min buffer → depart {depart.strftime('%H:%M')} → driver report at {suggested_report_time}")
         except Exception:
             pass
 
@@ -572,12 +593,14 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     elif travel_date:
         lines.append(f"📅 *Date:* {travel_date}")
 
-    # Time handling — show suggested report time if customer gave arrival time
+    # Time handling — if event_time given, show calculated report time (ignore GPT's report_time)
     if event_time:
         lines.append(f"✈️ *Need to reach by:* {event_time}")
         if route_data.get("suggested_report_time"):
-            lines.append(f"🕐 *Driver should leave by:* {route_data['suggested_report_time']} (calculated)")
-    if report_time:
+            lines.append(f"🕐 *Driver reports at:* {route_data['suggested_report_time']} (auto-calculated)")
+        elif report_time:
+            lines.append(f"🕐 *Driver reports at:* {report_time}")
+    elif report_time:
         lines.append(f"🕐 *Driver reports at:* {report_time}")
     if end_time:
         lines.append(f"🏁 *Until:* {end_time}")
