@@ -33,6 +33,8 @@ def _build_system_prompt():
     IST = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(IST)
     today_str = now_ist.strftime("%Y-%m-%d")
+    tomorrow_str = (now_ist + timedelta(days=1)).strftime("%Y-%m-%d")
+    day_after_str = (now_ist + timedelta(days=2)).strftime("%Y-%m-%d")
     day_name = now_ist.strftime("%A")
     time_str = now_ist.strftime("%H:%M")
 
@@ -40,7 +42,12 @@ def _build_system_prompt():
 Customers message you directly on WhatsApp to book drivers. You're like their trusted go-to person for all driver needs.
 
 TODAY'S DATE: {today_str} ({day_name}), Current time: {time_str} IST.
-Use this to correctly interpret "today", "tomorrow", "nale", "innale", "next week", etc.
+TOMORROW'S DATE: {tomorrow_str}
+Use this to correctly interpret dates:
+- "today"/"innu" = {today_str}
+- "tomorrow"/"nale"/"naale" = {tomorrow_str}
+- "day after"/"marranne divasam" = {day_after_str}
+CRITICAL: "nale" ALWAYS means {tomorrow_str}, NEVER {today_str}. Double-check your date!
 
 CRITICAL IDENTITY RULES:
 - YOUR name is Vignesh. You are the OWNER running this service.
@@ -120,12 +127,27 @@ LOCATION VALIDATION (CRITICAL — DO THIS BEFORE BOOKING):
 Before firing create_booking, BOTH pickup and drop must be REAL, GEOCODABLE place names.
 A valid location has at minimum: a town/area name that exists on a map.
 
-GOOD locations (geocodable):
-- "Palakkad" / "Palakkad Town" / "Palakkad Bus Stand"
-- "Coimbatore Airport" / "Cochin Airport"
-- "Munnar" / "Wayanad" / "Thrissur"
+GOOD locations (geocodable — use SPECIFIC TOWN names, not district names):
+- "Palakkad Town" / "Palakkad Bus Stand" / "Palakkad Railway Station"
+- "Coimbatore Airport" / "Cochin International Airport"
+- "Munnar Town" / "Kalpetta, Wayanad" / "Thrissur Town"
 - "Olavakkode, Palakkad" / "Kalpathy, Palakkad"
 - "Indel Honda Service Center, Coimbatore" (specific business + city)
+
+DISTRICT → TOWN MAPPING (CRITICAL — always use the town, never just district name):
+- "Wayanad" → use "Kalpetta, Wayanad" (main town) — ask customer if they mean a different town in Wayanad
+- "Ernakulam" → use "Ernakulam Town" or "Kochi"
+- "Idukki" → ask: "Idukki-le evide? Thodupuzha? Munnar? Kumily?"
+- "Malappuram" → use "Malappuram Town"
+- "Kozhikode" → use "Kozhikode City" or "Calicut"
+- "Kannur" → use "Kannur Town"
+- "Kasaragod" → use "Kasaragod Town"
+- "Kollam" → use "Kollam Town"
+- "Alappuzha" → use "Alappuzha Town" or "Alleppey"
+- "Pathanamthitta" → use "Pathanamthitta Town"
+- "Kottayam" → use "Kottayam Town"
+- When customer says just a district name, ask: "Ethu town aanu? [district]-le evide specifically?"
+  Exception: If context makes the main town obvious (e.g., "Thrissur Pooram" → Thrissur Town is obvious)
 
 BAD locations (NOT geocodable — must ask for more details):
 - "my place" / "ividunnu" / "from here" / "my home" / "your location"
@@ -382,6 +404,23 @@ def process_message(phone: str, incoming_msg: str) -> str:
 
 BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "30"))
 
+# Ghat / mountain road destinations — ORS underestimates these by 30-50%
+# because it doesn't account for hairpin bends, steep gradients, slow trucks, fog
+GHAT_KEYWORDS = {
+    "munnar", "wayanad", "kalpetta", "sultan bathery", "sulthan bathery",
+    "mananthavady", "ooty", "coonoor", "kodaikanal", "vagamon", "ponmudi",
+    "nelliyampathy", "silent valley", "agumbe", "coorg", "madikeri",
+    "valparai", "topslip", "parambikulam", "thekkady", "kumily", "idukki",
+    "devikulam", "vythiri", "lakkidi", "thamarassery", "nilambur",
+}
+
+
+def _is_ghat_route(from_name: str, to_name: str, stops: list = None) -> bool:
+    """Check if route passes through known ghat/hill sections."""
+    all_places = [from_name, to_name] + (stops or [])
+    text = " ".join(all_places).lower()
+    return any(kw in text for kw in GHAT_KEYWORDS)
+
 
 def _compute_route_data(action_data: dict) -> dict:
     """Call OpenRouteService to get real distance/duration and compute fare.
@@ -396,6 +435,7 @@ def _compute_route_data(action_data: dict) -> dict:
     event_time = action_data.get("event_time")
 
     route_source = "gpt_estimate"
+    is_ghat = _is_ghat_route(from_name, to_name, stops)
 
     # ── REAL ROUTING via OpenRouteService ──
     if stops and isinstance(stops, list) and len(stops) > 0:
@@ -415,6 +455,12 @@ def _compute_route_data(action_data: dict) -> dict:
             print(f"📍 Route: {from_name} → {to_name} = {est_distance}km, {est_duration}min")
         else:
             print(f"⚠️ Route API failed for {from_name} → {to_name}, using GPT estimate")
+
+    # For ghat/mountain routes, add 40% to ORS duration (it severely underestimates)
+    if is_ghat and route_source == "openrouteservice":
+        original = est_duration
+        est_duration = int(est_duration * 1.4)
+        print(f"⛰️ Ghat route detected! Duration adjusted: {original}min → {est_duration}min (+40%)")
 
     # Add buffer (30 min default) to duration for real-world conditions
     est_duration_with_buffer = est_duration + BUFFER_MINUTES
@@ -462,6 +508,7 @@ def _compute_route_data(action_data: dict) -> dict:
         "fare": est_fare,
         "route_source": route_source,
         "suggested_report_time": suggested_report_time,
+        "is_ghat": is_ghat,
     }
 
 
@@ -536,9 +583,11 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
         lines.append(f"🏁 *Until:* {end_time}")
 
     # Route info
-    src_label = "📍" if route_data["route_source"] == "openrouteservice" else "~"
     lines.append(f"📏 *Distance:* {route_data['distance_km']} km")
-    lines.append(f"⏱️ *Travel time:* {route_data['duration_min']} min (+{BUFFER_MINUTES} min buffer)")
+    travel_note = f"{route_data['duration_min']} min (+{BUFFER_MINUTES} min buffer)"
+    if route_data.get("is_ghat"):
+        travel_note += " ⛰️ Ghat road"
+    lines.append(f"⏱️ *Travel time:* {travel_note}")
     lines.append(f"💰 *Est. Fare:* ₹{route_data['fare']}")
 
     if contact_name:
