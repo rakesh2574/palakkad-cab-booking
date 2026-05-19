@@ -2,15 +2,16 @@
 AI Booking Agent — powered by GPT-4o mini.
 
 The agent interprets WhatsApp messages and calls database helpers
-to manage bookings. GPT estimates distances for any location in Kerala.
+to manage bookings. Uses OpenRouteService for real distance/duration.
 
-V2: Kerala-wide, future bookings, rebooking suggestions, driving preferences.
+V3: Vignesh persona, cross-state, round trips, full-day, real routing.
 """
 
 import os
 import json
 from openai import OpenAI
 import database as db
+import route_calculator as rc
 
 # Lazy-initialize the OpenAI client (created on first use, not at import time)
 _client = None
@@ -110,23 +111,17 @@ BOOKING FLOW:
    - SPECIAL NOTES: e-pass, urgency ("without fail", "sharp"), documentation needs
    - REMINDER: if customer asks for a reminder
 5. For multi-date bookings, use "travel_dates" array
-6. Estimate distance/duration and confirm
-7. Fare is ₹{rate}/min based on estimated trip duration
-   - Round trips: multiply fare by ~1.8 (return leg often shorter in time)
+6. The system will automatically calculate REAL distance and duration using a maps API.
+   You just need to provide rough estimates in est_distance_km and est_duration_min as fallback.
+   The REAL values from the maps API will override your estimates in the final confirmation.
+7. Fare is ₹{rate}/min based on trip duration
+   - Round trips: fare is calculated on total round-trip distance
    - Full-day: use hourly rate equivalent
 8. If customer confirms, create the booking
 
-DISTANCE ESTIMATION GUIDELINES:
-- Kerala internal: same as before (20-600 km, 10 min to 12 hours)
-- Palakkad to Coimbatore: ~55 km, ~1.5 hours
-- Palakkad to Pollachi: ~45 km, ~1 hour
-- Palakkad to Ooty/Coonoor: ~120-140 km, ~3.5-4 hours (ghat roads)
-- Palakkad to Palani: ~80 km, ~2 hours
-- Palakkad to Bangalore: ~350 km, ~7 hours
-- Palakkad to Chennai: ~500 km, ~8-9 hours
-- Palakkad to Mangalore: ~350 km, ~7 hours
-- Average speeds: City ~25 km/h, State highway ~45 km/h, NH ~60 km/h, Ghats ~25 km/h
-- Round distances to nearest 0.5 km, duration to nearest 5 min
+DISTANCE ESTIMATION (FALLBACK ONLY — maps API provides real values):
+- Provide your best rough estimate. The system will replace it with accurate data.
+- If you're unsure, estimate conservatively.
 
 DRIVING PREFERENCES:
 - If a customer mentions speed preference (slow, normal, fast), note it
@@ -361,12 +356,45 @@ def _handle_create_booking(customer_id: int, action_data: dict, base_reply: str)
     if not from_name or not to_name:
         return "I need at least a pickup and destination to arrange a driver. Where should we send the driver?"
 
+    # ── REAL ROUTING via OpenRouteService ──
+    route_source = "gpt_estimate"
+    if stops and isinstance(stops, list) and len(stops) > 0:
+        # Multi-stop: build full waypoint list
+        all_places = [from_name] + stops + [to_name]
+        route = rc.get_route_with_stops(all_places)
+        if route:
+            est_distance = route["distance_km"]
+            est_duration = route["duration_min"]
+            route_source = "openrouteservice"
+            print(f"📍 Multi-stop route: {' → '.join(all_places)} = {est_distance}km, {est_duration}min")
+    else:
+        route = rc.get_route(from_name, to_name)
+        if route:
+            est_distance = route["distance_km"]
+            est_duration = route["duration_min"]
+            route_source = "openrouteservice"
+            print(f"📍 Route: {from_name} → {to_name} = {est_distance}km, {est_duration}min")
+        else:
+            print(f"⚠️ Route API failed for {from_name} → {to_name}, using GPT estimate")
+
     est_fare = round(est_duration * RATE_PER_MIN, 2)
 
     # Adjust fare for round trips and full-day
     if trip_type == "round_trip":
-        est_fare = round(est_fare * 1.8, 2)
-        est_distance = round(est_distance * 1.8, 1)
+        # For round trips, get return route too (may differ due to one-way roads)
+        if route_source == "openrouteservice":
+            return_route = rc.get_route(to_name, from_name)
+            if return_route:
+                est_distance = round(est_distance + return_route["distance_km"], 1)
+                est_duration = est_duration + return_route["duration_min"]
+                est_fare = round(est_duration * RATE_PER_MIN, 2)
+                print(f"🔄 Round trip total: {est_distance}km, {est_duration}min")
+            else:
+                est_fare = round(est_fare * 1.8, 2)
+                est_distance = round(est_distance * 1.8, 1)
+        else:
+            est_fare = round(est_fare * 1.8, 2)
+            est_distance = round(est_distance * 1.8, 1)
     elif trip_type == "full_day" or booking_type == "full_day":
         # Full-day: estimate based on end_time - report_time/travel_time, min 8 hours
         est_fare = round(RATE_PER_MIN * max(est_duration, 480), 2)
