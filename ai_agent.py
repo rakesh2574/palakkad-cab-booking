@@ -416,7 +416,7 @@ def process_message(phone: str, incoming_msg: str) -> str:
     return reply
 
 
-BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "30"))
+BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "35"))
 
 # Ghat / mountain road destinations — ORS underestimates these by 30-50%
 # because it doesn't account for hairpin bends, steep gradients, slow trucks, fog
@@ -572,7 +572,22 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
 
     trip_label = {"round_trip": "🔄 Round Trip", "full_day": "📆 Full Day", "one_way": "➡️ One Way"}.get(trip_type, "")
 
-    lines = ["📋 *Booking Preview — Please Confirm:*", ""]
+    # Convert duration to hours and minutes for display
+    dur = route_data['duration_with_buffer_min']
+    dur_hours = dur // 60
+    dur_mins = dur % 60
+    if dur_hours > 0 and dur_mins > 0:
+        dur_display = f"~{dur_hours} hr {dur_mins} min"
+    elif dur_hours > 0:
+        dur_display = f"~{dur_hours} hr"
+    else:
+        dur_display = f"~{dur_mins} min"
+
+    lines = [
+        "Thanks for the details! 🙏",
+        "Checked route and driver availability — here's what I have:",
+        "",
+    ]
     if trip_label:
         lines.append(trip_label)
 
@@ -595,22 +610,20 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
 
     # Time handling — if event_time given, show calculated report time (ignore GPT's report_time)
     if event_time:
-        lines.append(f"✈️ *Need to reach by:* {event_time}")
+        lines.append(f"🕐 *Reach by:* {event_time}")
         if route_data.get("suggested_report_time"):
-            lines.append(f"🕐 *Driver reports at:* {route_data['suggested_report_time']} (auto-calculated)")
+            lines.append(f"🚗 *Driver will pick you up at:* {route_data['suggested_report_time']}")
         elif report_time:
-            lines.append(f"🕐 *Driver reports at:* {report_time}")
+            lines.append(f"🚗 *Driver will pick you up at:* {report_time}")
     elif report_time:
-        lines.append(f"🕐 *Driver reports at:* {report_time}")
+        lines.append(f"🚗 *Driver will pick you up at:* {report_time}")
     if end_time:
         lines.append(f"🏁 *Until:* {end_time}")
 
-    # Route info
+    # Route info — clean, no internal buffer details
     lines.append(f"📏 *Distance:* {route_data['distance_km']} km")
-    travel_note = f"{route_data['duration_min']} min (+{BUFFER_MINUTES} min buffer)"
-    if route_data.get("is_ghat"):
-        travel_note += " ⛰️ Ghat road"
-    lines.append(f"⏱️ *Travel time:* {travel_note}")
+    ghat_note = " ⛰️" if route_data.get("is_ghat") else ""
+    lines.append(f"⏱️ *Est. travel time:* {dur_display}{ghat_note}")
     lines.append(f"💰 *Est. Fare:* ₹{route_data['fare']}")
 
     if contact_name:
@@ -619,8 +632,8 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
         lines.append(f"📝 *Notes:* {special_notes}")
 
     lines.append("")
-    lines.append("*Sheriyaano? Book cheyyatte?* ✅")
-    lines.append("(Reply *Yes/Seri* to confirm, or tell me what to change)")
+    lines.append("*Confirm cheyyatte?* ✅")
+    lines.append("(Reply *Yes/Seri* to book, or tell me what to change)")
 
     return "\n".join(lines)
 
