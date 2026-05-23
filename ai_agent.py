@@ -214,17 +214,18 @@ PROMPT INJECTION PROTECTION:
 Before firing create_booking or create_multiple_bookings, EVERY trip MUST have ALL of these collected EXPLICITLY from the customer:
 1. ✅ Customer name — if "Unknown", ask FIRST before anything else
 2. ✅ Contact number — ask if not known
-3. ✅ Pickup location with landmark/area — MUST be a specific place with area/landmark, not just a city/town name
-   → "Palakkad" is NOT enough. Ask: "Where exactly in Palakkad? Near which landmark or area?"
-   → GOOD: "Kalpathy, Palakkad" / "Railway Station, Palakkad" / "Near Chandranagar, Palakkad"
-   → BAD: "Palakkad" / "Palakkad Town" (too vague for driver to find the customer)
-4. ✅ Drop-off location with landmark/area — same rule as pickup: specific place, not just city name
-5. ✅ Date (travel_date) — EXPLICITLY stated
-6. ✅ Pickup time — EXPLICITLY stated for EACH trip independently
+3. ✅ Pickup location — place/area/landmark name
+4. ✅ Pickup district — which district or city the pickup is in (e.g., Palakkad, Ernakulam, Coimbatore)
+   → If customer says "Koppam", you likely know it's in Palakkad district. Set from="Koppam", from_district="Palakkad".
+   → If you're unsure which district, ASK: "Which district is [place] in?"
+5. ✅ Drop-off location — place/area/landmark name
+6. ✅ Drop-off district — which district or city the drop is in
+7. ✅ Date (travel_date) — EXPLICITLY stated
+8. ✅ Pickup time — EXPLICITLY stated for EACH trip independently
    → report_time = when driver should pick up / depart
    → event_time = when customer must ARRIVE at destination
    → THERE IS NO DEFAULT TIME. If customer did not say a time for a trip, that trip has NO time — ASK!
-7. ✅ Notes/preferences — ask "Any special requirements or notes?" before finalizing
+9. ✅ Notes/preferences — ask "Any special requirements or notes?" before finalizing
 
 ⛔ ABSOLUTE RULES — VIOLATING ANY OF THESE IS A CRITICAL ERROR:
 
@@ -276,8 +277,10 @@ You MUST respond with a JSON object (and nothing else) in this format:
 
 For "set_name" action_data: {{{{ "name": "Customer Name" }}}}
 For "create_booking" action_data: {{{{
-  "from": "Pickup Place Name (use specific place name like 'Palakkad Town' not vague terms)",
-  "to": "Drop Place Name",
+  "from": "Pickup place/landmark name (e.g., 'Koppam', 'Railway Station', 'Bus Stand')",
+  "from_district": "District/city where pickup is located (e.g., 'Palakkad', 'Ernakulam', 'Coimbatore')",
+  "to": "Drop place/landmark name (e.g., 'Elevanchery', 'Airport', 'Medical College')",
+  "to_district": "District/city where drop is located (e.g., 'Palakkad', 'Thrissur', 'Kochi')",
   "est_distance_km": 12.5,
   "est_duration_min": 30,
   "travel_date": "YYYY-MM-DD" or null for immediate,
@@ -298,11 +301,14 @@ For "create_booking" action_data: {{{{
   "customer_name": "Name if provided" or null,
   "customer_phone": "Phone if provided" or null
 }}}}
+  ^^^ DISTRICT FIELDS ARE MANDATORY. "from_district" and "to_district" MUST always be filled.
+  ^^^ If customer says "Koppam" and you know it's in Palakkad → from="Koppam", from_district="Palakkad"
+  ^^^ If you're NOT SURE which district a place belongs to, ASK the customer.
+  ^^^ For places outside Kerala, use the city name as district (e.g., "Coimbatore", "Bangalore", "Chennai").
   ^^^ travel_date MUST use today's real date ({today_str}) to calculate. "nale"/"tomorrow" = next day from {today_str}.
   ^^^ "ethanam" / "need to reach by X" → set event_time=X (arrival). "pokanam"/"leave at X" → set report_time=X (departure).
   ^^^ If customer says arrival time (ethanam), you MUST set event_time, NOT report_time.
   ^^^ trip_type: "one_way" for single direction, "round_trip" for to/fro or UP-DN, "full_day" for all-day hire.
-  ^^^ Use SPECIFIC place names for "from" and "to" — never use vague terms like "Your Location" or "Current Location".
 For "create_multiple_bookings" action_data: {{{{
   "bookings": [
     {{{{ same fields as create_booking above }}}},
@@ -517,11 +523,24 @@ def _is_ghat_route(from_name: str, to_name: str, stops: list = None) -> bool:
     return any(kw in text for kw in GHAT_KEYWORDS)
 
 
+def _build_geocode_name(place: str, district: str) -> str:
+    """Combine place name with district for accurate geocoding.
+    e.g., 'Koppam' + 'Palakkad' → 'Koppam, Palakkad, Kerala, India'"""
+    if not district:
+        return place
+    # Don't duplicate if place already contains the district
+    if district.lower() in place.lower():
+        return f"{place}, Kerala, India"
+    return f"{place}, {district}, Kerala, India"
+
+
 def _compute_route_data(action_data: dict) -> dict:
     """Call OpenRouteService to get real distance/duration and compute fare.
     Returns a dict with all computed route info."""
     from_name = action_data.get("from", "")
     to_name = action_data.get("to", "")
+    from_district = action_data.get("from_district", "")
+    to_district = action_data.get("to_district", "")
     est_distance = action_data.get("est_distance_km", 10.0)
     est_duration = action_data.get("est_duration_min", 20)
     trip_type = action_data.get("trip_type", "one_way")
@@ -532,9 +551,13 @@ def _compute_route_data(action_data: dict) -> dict:
     route_source = "gpt_estimate"
     is_ghat = _is_ghat_route(from_name, to_name, stops)
 
+    # Build geocode-friendly names with district for accurate location matching
+    from_geocode = _build_geocode_name(from_name, from_district)
+    to_geocode = _build_geocode_name(to_name, to_district)
+
     # ── REAL ROUTING via OpenRouteService ──
     if stops and isinstance(stops, list) and len(stops) > 0:
-        all_places = [from_name] + stops + [to_name]
+        all_places = [from_geocode] + stops + [to_geocode]
         route = rc.get_route_with_stops(all_places)
         if route:
             est_distance = route["distance_km"]
@@ -542,14 +565,14 @@ def _compute_route_data(action_data: dict) -> dict:
             route_source = "openrouteservice"
             print(f"📍 Multi-stop route: {' → '.join(all_places)} = {est_distance}km, {est_duration}min")
     else:
-        route = rc.get_route(from_name, to_name)
+        route = rc.get_route(from_geocode, to_geocode)
         if route:
             est_distance = route["distance_km"]
             est_duration = route["duration_min"]
             route_source = "openrouteservice"
-            print(f"📍 Route: {from_name} → {to_name} = {est_distance}km, {est_duration}min")
+            print(f"📍 Route: {from_geocode} → {to_geocode} = {est_distance}km, {est_duration}min")
         else:
-            print(f"⚠️ Route API failed for {from_name} → {to_name}, using GPT estimate")
+            print(f"⚠️ Route API failed for {from_geocode} → {to_geocode}, using GPT estimate")
 
     # For ghat/mountain routes, add 80% to ORS duration (it severely underestimates
     # hairpin bends, steep gradients, slow trucks, fog on ghat roads)
@@ -565,7 +588,7 @@ def _compute_route_data(action_data: dict) -> dict:
     # Adjust for round trips
     if trip_type == "round_trip":
         if route_source == "openrouteservice":
-            return_route = rc.get_route(to_name, from_name)
+            return_route = rc.get_route(to_geocode, from_geocode)
             if return_route:
                 est_distance = round(est_distance + return_route["distance_km"], 1)
                 return_duration = return_route["duration_min"]
@@ -703,13 +726,18 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     if trip_label:
         lines.append(trip_label)
 
+    from_district = action_data.get("from_district", "")
+    to_district = action_data.get("to_district", "")
+    from_display = f"{from_name}, {from_district}" if from_district and from_district.lower() not in from_name.lower() else from_name
+    to_display = f"{to_name}, {to_district}" if to_district and to_district.lower() not in to_name.lower() else to_name
+
     if booking_type == "vehicle_pickup" and vehicle_info:
         lines.append(f"🚘 *Vehicle:* {vehicle_info}")
-        lines.append(f"📍 *Pickup from:* {from_name}")
-        lines.append(f"📍 *Deliver to:* {to_name}")
+        lines.append(f"📍 *Pickup from:* {from_display}")
+        lines.append(f"📍 *Deliver to:* {to_display}")
     else:
-        lines.append(f"📍 *Pickup:* {from_name}")
-        lines.append(f"📍 *Drop:* {to_name}")
+        lines.append(f"📍 *Pickup:* {from_display}")
+        lines.append(f"📍 *Drop:* {to_display}")
 
     if stops and isinstance(stops, list):
         lines.append(f"🛑 *Stops:* {' → '.join(stops)}")
@@ -815,8 +843,13 @@ def _handle_propose_multiple_bookings(customer_id: int, phone: str, bookings_lis
         trip_label = {"round_trip": "Round Trip", "full_day": "Full Day", "one_way": "One Way"}.get(trip_type, "One Way")
         ghat_note = " ⛰️" if route_data.get("is_ghat") else ""
 
+        bd_from_district = bd.get("from_district", "")
+        bd_to_district = bd.get("to_district", "")
+        from_display = f"{from_name}, {bd_from_district}" if bd_from_district and bd_from_district.lower() not in from_name.lower() else from_name
+        to_display = f"{to_name}, {bd_to_district}" if bd_to_district and bd_to_district.lower() not in to_name.lower() else to_name
+
         preview_lines = [f"*Trip #{i}* ({trip_label})"]
-        preview_lines.append(f"  📍 {from_name} → {to_name}")
+        preview_lines.append(f"  📍 {from_display} → {to_display}")
         if travel_date:
             preview_lines.append(f"  📅 {travel_date}")
         if event_time:
@@ -858,6 +891,8 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
     """Actually create booking(s) after customer confirmation."""
     from_name = action_data.get("from", "")
     to_name = action_data.get("to", "")
+    from_district = action_data.get("from_district", "")
+    to_district = action_data.get("to_district", "")
     travel_time = action_data.get("travel_time")
     driving_notes = action_data.get("driving_notes")
     trip_type = action_data.get("trip_type", "one_way")
@@ -871,6 +906,10 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
     vehicle_info = action_data.get("vehicle_info")
     special_notes = action_data.get("special_notes")
     reminder_time = action_data.get("reminder_time")
+
+    # Build display names with district
+    from_display = f"{from_name}, {from_district}" if from_district and from_district.lower() not in from_name.lower() else from_name
+    to_display = f"{to_name}, {to_district}" if to_district and to_district.lower() not in to_name.lower() else to_name
 
     # Use suggested report time if customer gave arrival time but no explicit report time
     if not report_time and route_data.get("suggested_report_time"):
@@ -897,8 +936,8 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
     common = dict(
         customer_id=customer_id,
         driver_id=driver["id"],
-        pickup_location=from_name,
-        drop_location=to_name,
+        pickup_location=from_display,
+        drop_location=to_display,
         distance_km=est_distance,
         est_duration_min=est_duration,
         travel_time=travel_time,
@@ -924,7 +963,7 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
             booking_ids.append((bid, d))
         total_fare = est_fare * len(dates)
         return _format_multi_date_confirmation(
-            booking_ids, from_name, to_name, driver, est_distance, est_duration,
+            booking_ids, from_display, to_display, driver, est_distance, est_duration,
             est_fare, total_fare, travel_time, report_time, event_time,
             trip_type, booking_type, contact_name, contact_phone,
             vehicle_info, stops, special_notes, driving_notes,
@@ -934,7 +973,7 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
     single_date = dates[0]
     booking_id, status = db.create_booking(travel_date=single_date, **common)
     return _format_single_confirmation(
-        booking_id, status, from_name, to_name, driver, single_date,
+        booking_id, status, from_display, to_display, driver, single_date,
         est_distance, est_duration, est_fare, travel_time, report_time,
         event_time, end_time, trip_type, booking_type, contact_name,
         contact_phone, vehicle_info, stops, special_notes, driving_notes,
