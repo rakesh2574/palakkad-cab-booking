@@ -7,7 +7,15 @@ V2: Kerala-wide coverage, scheduled bookings, driving preferences.
 
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# Indian Standard Time (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def now_ist_str() -> str:
+    """Return current IST datetime as a string for DB storage."""
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 DB_PATH = os.getenv("DB_PATH", "kerala_cabs.db")
 
@@ -149,8 +157,8 @@ def get_or_create_customer(phone: str, name: str = None):
     customer = cur.fetchone()
     if not customer:
         cur.execute(
-            "INSERT INTO customers (phone, name) VALUES (?, ?)",
-            (phone, name or "Unknown"),
+            "INSERT INTO customers (phone, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (phone, name or "Unknown", now_ist_str(), now_ist_str()),
         )
         conn.commit()
         cur.execute("SELECT * FROM customers WHERE phone = ?", (phone,))
@@ -162,8 +170,8 @@ def get_or_create_customer(phone: str, name: str = None):
 def update_customer_name(phone: str, name: str):
     conn = get_connection()
     conn.execute(
-        "UPDATE customers SET name = ?, updated_at = datetime('now') WHERE phone = ?",
-        (name, phone),
+        "UPDATE customers SET name = ?, updated_at = ? WHERE phone = ?",
+        (name, now_ist_str(), phone),
     )
     conn.commit()
     conn.close()
@@ -174,13 +182,13 @@ def update_customer_preferences(phone: str, preferred_speed: str = None, driving
     conn = get_connection()
     if preferred_speed:
         conn.execute(
-            "UPDATE customers SET preferred_speed = ?, updated_at = datetime('now') WHERE phone = ?",
-            (preferred_speed, phone),
+            "UPDATE customers SET preferred_speed = ?, updated_at = ? WHERE phone = ?",
+            (preferred_speed, now_ist_str(), phone),
         )
     if driving_notes:
         conn.execute(
-            "UPDATE customers SET driving_notes = ?, updated_at = datetime('now') WHERE phone = ?",
-            (driving_notes, phone),
+            "UPDATE customers SET driving_notes = ?, updated_at = ? WHERE phone = ?",
+            (driving_notes, now_ist_str(), phone),
         )
     conn.commit()
     conn.close()
@@ -189,8 +197,8 @@ def update_customer_preferences(phone: str, preferred_speed: str = None, driving
 def log_conversation(customer_id: int, direction: str, message: str):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO conversations (customer_id, direction, message) VALUES (?, ?, ?)",
-        (customer_id, direction, message),
+        "INSERT INTO conversations (customer_id, direction, message, created_at) VALUES (?, ?, ?, ?)",
+        (customer_id, direction, message, now_ist_str()),
     )
     conn.commit()
     conn.close()
@@ -233,14 +241,14 @@ def create_booking(customer_id, driver_id, pickup_location, drop_location,
             travel_date, travel_time, driving_notes,
             trip_type, booking_type, report_time, event_time, end_time,
             contact_name, contact_phone, stops, vehicle_info, special_notes,
-            reminder_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            reminder_time, booked_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (customer_id, driver_id, pickup_location, drop_location,
          status, distance_km, est_duration_min,
          travel_date, travel_time, driving_notes,
          trip_type, booking_type, report_time, event_time, end_time,
          contact_name, contact_phone, stops_json, vehicle_info, special_notes,
-         reminder_time),
+         reminder_time, now_ist_str()),
     )
     booking_id = cur.lastrowid
 
@@ -262,9 +270,9 @@ def complete_booking(booking_id: int, actual_duration_min: int, rate_per_min: fl
            SET status = 'completed',
                actual_duration_min = ?,
                fare = ?,
-               completed_at = datetime('now')
+               completed_at = ?
            WHERE id = ?""",
-        (actual_duration_min, fare, booking_id),
+        (actual_duration_min, fare, now_ist_str(), booking_id),
     )
     # Free up the driver
     row = conn.execute("SELECT driver_id FROM bookings WHERE id = ?", (booking_id,)).fetchone()
@@ -366,8 +374,8 @@ def try_activate_with_pin(phone: str, pin_text: str) -> str:
     # Activate the customer — also copy PIN's service onto the customer record
     pin_service = pin_row["service"] if "service" in pin_row.keys() else "cab"
     conn.execute(
-        "UPDATE customers SET is_activated = 1, activated_at = datetime('now'), updated_at = datetime('now'), service = ? WHERE phone = ?",
-        (pin_service or "cab", phone),
+        "UPDATE customers SET is_activated = 1, activated_at = ?, updated_at = ?, service = ? WHERE phone = ?",
+        (now_ist_str(), now_ist_str(), pin_service or "cab", phone),
     )
     # Increment PIN usage
     conn.execute(
@@ -386,8 +394,8 @@ def create_access_pin(pin: str, label: str = None, max_uses: int = 1, service: s
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO access_pins (pin, label, max_uses, service) VALUES (?, ?, ?, ?)",
-            (pin.strip().upper(), label, max_uses, service),
+            "INSERT INTO access_pins (pin, label, max_uses, service, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pin.strip().upper(), label, max_uses, service, now_ist_str()),
         )
         conn.commit()
     except Exception:
