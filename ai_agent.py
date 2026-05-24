@@ -118,10 +118,16 @@ BOOKING — WHAT YOU NEED (KEEP IT SIMPLE):
 To fire create_booking, you need these 5 things. Collect what's missing in ONE natural question, not one at a time:
 
 1. PICKUP — MUST be a specific place/landmark + district (driver needs to find the customer!)
-   → "Kottayam" or "Palakkad" ALONE is NOT enough for pickup. Ask: "Where in Kottayam should the driver pick up? Bus stand, railway station, or any landmark?"
-   → GOOD: "Kattans Hotel Bypass", "Railway Station", "Ramanathapuram", "Bus Stand Kottayam"
-   → BAD: "Kottayam", "Palakkad", "Thrissur" (just district names — driver won't know where to go!)
+   → "Kottayam" or "Palakkad" ALONE is NOT enough for pickup.
+   → A DISTRICT NAME IS NOT A PICKUP LOCATION. These are districts, NOT valid pickups:
+     Thiruvananthapuram, Kollam, Pathanamthitta, Alappuzha, Kottayam, Idukki, Ernakulam, Kochi,
+     Thrissur, Palakkad, Malappuram, Kozhikode, Wayanad, Kannur, Kasaragod
+   → If customer says "Palakkad to Kakkanad", you MUST ask: "Where in Palakkad should the driver pick you up? A landmark, bus stand, or area name please."
+   → ALWAYS ask for a specific landmark/area when pickup is just a district name. Combine this with other missing items in ONE message.
+   → GOOD pickup: "Kattans Hotel Bypass", "Railway Station", "Ramanathapuram", "Bus Stand Kottayam", "Koppam"
+   → BAD pickup: "Kottayam", "Palakkad", "Thrissur" (driver won't know where to go!)
    → Customer's home district is known from context. If they say "Koppam" and they're from Palakkad, you know from_district="Palakkad".
+   → NEVER fire create_booking with a bare district name as "from". Always get a specific place first.
 
 2. DROP — a city/district name is FINE (they're heading to that area, exact spot figured out during ride)
    → "Kakkanad" → to="Kakkanad", to_district="Ernakulam". No need to ask "where in Kakkanad?"
@@ -148,7 +154,10 @@ CONTACT NUMBER HANDLING:
 ⛔ CRITICAL DON'TS:
 - NEVER ask for the customer's name if it's already known (not "Unknown" in context). Just greet and proceed.
 - NEVER bluntly ask "What is your phone number?" — you already have it!
-- If booking is for TODAY and the requested pickup time has ALREADY PASSED (current time is {time_str} IST), politely let them know and suggest a later time or tomorrow. Example: "That time has already passed — would you like to schedule for a later time today, or shall we book for tomorrow?"
+- NEVER validate times yourself! Do NOT compare the current time with the requested time. Just accept whatever time the customer gives and fire create_booking — the SYSTEM will check if the time has passed and show an error if needed. You are NOT a clock.
+  ❌ BAD: "3 PM has already passed" (YOU DON'T KNOW THIS — the system checks it!)
+  ❌ BAD: "The time of 5:30 PM is in the future, so this is valid."
+  ✅ GOOD: Just fire create_booking with report_time="15:00" and let the system handle validation.
 - NEVER ask for "drop time" or "how long the trip will take" — the system calculates this.
 - NEVER ask the same question twice — read the conversation history!
 - NEVER ask questions one by one in separate messages — combine missing items into ONE message.
@@ -638,8 +647,14 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
             current_hour = now_ist.hour
             current_min = now_ist.minute
             if pickup_hour < current_hour or (pickup_hour == current_hour and pickup_min <= current_min):
-                current_time_str = now_ist.strftime("%I:%M %p")
-                return f"Sorry, it's already {current_time_str} IST. The pickup time {pickup_time_str} has already passed. Could you please provide a later time for today, or book for tomorrow? 🙏"
+                current_time_str = now_ist.strftime("%I:%M %p").lstrip("0")
+                # Format pickup time for display (e.g., "15:00" → "3:00 PM")
+                try:
+                    from datetime import datetime as _dt
+                    pickup_display = _dt.strptime(pickup_time_str, "%H:%M").strftime("%I:%M %p").lstrip("0")
+                except Exception:
+                    pickup_display = pickup_time_str
+                return f"That time has already passed — it's {current_time_str} now. Would you like to schedule for a later time today, or shall we book for tomorrow? 🙏"
         except Exception:
             pass
 
