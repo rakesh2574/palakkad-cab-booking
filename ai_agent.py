@@ -528,11 +528,14 @@ def _compute_route_data(action_data: dict) -> dict:
     elif trip_type == "full_day" or booking_type == "full_day":
         est_fare = round(RATE_PER_MIN * max(est_duration_with_buffer, 480), 2)
 
-    # Calculate suggested report time if customer gave arrival (event) time
-    # Driver should arrive 15 min BEFORE calculated departure for loading/prep
+    # Calculate suggested report time if customer gave ONLY arrival (event) time
+    # If customer gave BOTH report_time AND event_time, report_time wins (they said when to pick up)
     DRIVER_EARLY_BUFFER = 15
     suggested_report_time = None
-    if event_time and est_duration:
+    report_time = action_data.get("report_time")
+
+    if event_time and not report_time and est_duration:
+        # Customer only gave arrival time — back-calculate pickup time
         try:
             from datetime import datetime, timedelta
             evt = datetime.strptime(event_time, "%H:%M")
@@ -546,6 +549,9 @@ def _compute_route_data(action_data: dict) -> dict:
             print(f"🕐 Event at {event_time}, travel {est_duration}min + {BUFFER_MINUTES}min buffer → depart {depart.strftime('%H:%M')} → driver report at {suggested_report_time}")
         except Exception:
             pass
+    elif event_time and report_time:
+        # Customer gave both pickup AND arrival time — pickup time takes priority
+        print(f"🕐 Customer gave both report_time={report_time} and event_time={event_time}. Using customer's pickup time.")
 
     return {
         "distance_km": est_distance,
@@ -699,13 +705,16 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     elif travel_date:
         lines.append(f"📅 *Date:* {travel_date}")
 
-    # Time handling — if event_time given, show calculated report time (ignore GPT's report_time)
-    if event_time:
+    # Time handling — priority: customer's explicit pickup time > calculated pickup from event time
+    if report_time and event_time:
+        # Customer gave BOTH pickup AND arrival time — show pickup time, note arrival goal
+        lines.append(f"🚗 *Driver will pick you up at:* {report_time}")
+        lines.append(f"🎯 *Target arrival:* {event_time}")
+    elif event_time:
+        # Customer gave ONLY arrival time — show calculated pickup
         lines.append(f"🕐 *Reach by:* {event_time}")
         if route_data.get("suggested_report_time"):
             lines.append(f"🚗 *Driver will pick you up at:* {route_data['suggested_report_time']}")
-        elif report_time:
-            lines.append(f"🚗 *Driver will pick you up at:* {report_time}")
     elif report_time:
         lines.append(f"🚗 *Driver will pick you up at:* {report_time}")
     if end_time:
