@@ -133,19 +133,20 @@ To fire create_booking, you need these things. Collect what's missing in ONE nat
 
 2. PICKUP DISTRICT — the district where the pickup is (e.g., "Palakkad", "Ernakulam")
 
-3. DATE — today/tomorrow/specific date
+3. DROP DISTRICT — where the customer is heading. A district/city name is perfectly fine!
+   → "Kochi", "Thrissur", "Ernakulam" are all valid drops — we need at least the district for route/fare calculation.
+   → If customer also gives a specific drop landmark (e.g., "Kakkanad"), great — use it as "to" and set to_district="Ernakulam".
+   → If customer only gives a district (e.g., "Thrissur"), set to="Thrissur" and to_district="Thrissur". That's fine — the driver will get the exact spot during the ride.
+   → Do NOT insist on a specific landmark for drop — district is enough.
 
-4. TIME — pickup time or arrival time
+4. DATE — today/tomorrow/specific date
+
+5. TIME — pickup time or arrival time
    → This is the ONLY time you need. It's either when the driver should come (report_time) or when customer needs to reach (event_time).
    → NEVER ask for "drop time" or "arrival time at destination" — the customer doesn't know that, it depends on traffic!
    → If they said "by 3pm" in an earlier message, USE IT. Don't ask again.
 
 ★ OPTIONAL — nice to have, but NOT required:
-
-5. DROP LOCATION — where the customer is going. A district name is perfectly fine (e.g., "Kochi", "Thrissur").
-   → The customer may not know the drop yet — they might decide during the ride. That's okay!
-   → If they mention a destination, use it. If not, DON'T ask repeatedly — just proceed without it.
-   → If drop is given, set to_district too (e.g., "Kakkanad" → to_district="Ernakulam").
 
 6. NOTES — any preferences (optional, don't push for it)
 
@@ -206,6 +207,8 @@ For "create_booking" action_data:
   {{{{
     "from": "Specific pickup landmark (e.g., 'Koppam', 'Railway Station', 'Bus Stand')",
     "from_district": "District of pickup (e.g., 'Palakkad', 'Ernakulam')",
+    "to": "Drop location — district name is fine (e.g., 'Thrissur', 'Kochi') or specific (e.g., 'Kakkanad')",
+    "to_district": "District of drop (e.g., 'Ernakulam', 'Thrissur'). If customer just says 'Thrissur', set both to='Thrissur' and to_district='Thrissur'.",
     "travel_date": "YYYY-MM-DD (use {today_str} for today, {tomorrow_str} for tomorrow)",
     "report_time": "HH:MM" or null (pickup/departure time — when driver should come),
     "event_time": "HH:MM" or null (arrival time — when customer must reach destination)
@@ -215,8 +218,6 @@ For "create_booking" action_data:
 
   ── OPTIONAL FIELDS (include when available): ──
   {{{{
-    "to": "Drop location — can be a district name like 'Kochi' or specific like 'Kakkanad'",
-    "to_district": "District of drop (e.g., 'Ernakulam', 'Thrissur')",
     "trip_type": "one_way" (default) / "round_trip" / "full_day",
     "booking_type": "point_to_point" (default) / "hourly" / "full_day" / "vehicle_pickup",
     "contact_name": "Third-party contact name if booking for someone else",
@@ -482,7 +483,7 @@ def _build_geocode_name(place: str, district: str) -> str:
 
 def _compute_route_data(action_data: dict) -> dict:
     """Call OpenRouteService to get real distance/duration and compute fare.
-    Returns a dict with all computed route info. If no drop location, returns zeroed route."""
+    Returns a dict with all computed route info."""
     from_name = action_data.get("from", "")
     to_name = action_data.get("to", "")
     from_district = action_data.get("from_district", "")
@@ -493,18 +494,6 @@ def _compute_route_data(action_data: dict) -> dict:
     booking_type = action_data.get("booking_type", "point_to_point")
     stops = action_data.get("stops")
     event_time = action_data.get("event_time")
-
-    # If no drop location, we can't compute a route — return placeholder
-    if not to_name:
-        return {
-            "distance_km": 0,
-            "duration_min": 0,
-            "duration_with_buffer_min": 0,
-            "fare": 0,
-            "route_source": "no_destination",
-            "suggested_report_time": None,
-            "is_ghat": False,
-        }
 
     route_source = "gpt_estimate"
     is_ghat = _is_ghat_route(from_name, to_name, stops)
@@ -606,11 +595,16 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     from_name = action_data.get("from", "")
     to_name = action_data.get("to", "")
 
-    if not from_name:
-        return "Could you please share the pickup location with a landmark or area name? I'll arrange a driver right away! 🚗"
+    if not from_name or not to_name:
+        missing = []
+        if not from_name:
+            missing.append("pickup location (with a landmark or area name)")
+        if not to_name:
+            missing.append("drop-off location (even a district name is fine)")
+        return f"Could you please share the {' and '.join(missing)}? I'll arrange a driver right away! 🚗"
 
-    # Catch nonsensical same-location trips (only if drop is provided)
-    if to_name and from_name.strip().lower() == to_name.strip().lower():
+    # Catch nonsensical same-location trips
+    if from_name.strip().lower() == to_name.strip().lower():
         return f"The pickup and drop location are both '{from_name}'. Could you please clarify the correct pickup and destination?"
 
     # ── PICKUP MUST BE SPECIFIC (not just a district name) ──
@@ -624,7 +618,7 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     # But if from_district or to_district is missing, fill from the name if possible
     if not action_data.get("from_district"):
         action_data["from_district"] = from_name.split(",")[-1].strip() if "," in from_name else ""
-    if to_name and not action_data.get("to_district"):
+    if not action_data.get("to_district"):
         if _is_just_district(to_name):
             action_data["to_district"] = to_name
         else:
@@ -719,36 +713,26 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     else:
         dur_display = f"~{dur_mins} min"
 
-    has_drop = bool(to_name)
-
     lines = [
         "Thanks for the details! 🙏",
+        "Checked route and driver availability — here's what I have:",
+        "",
     ]
-    if has_drop:
-        lines.append("Checked route and driver availability — here's what I have:")
-    else:
-        lines.append("Here's what I have for your booking:")
-    lines.append("")
-
     if trip_label:
         lines.append(trip_label)
 
     from_district = action_data.get("from_district", "")
     to_district = action_data.get("to_district", "")
     from_display = f"{from_name}, {from_district}" if from_district and from_district.lower() not in from_name.lower() else from_name
-    to_display = f"{to_name}, {to_district}" if to_name and to_district and to_district.lower() not in to_name.lower() else to_name
+    to_display = f"{to_name}, {to_district}" if to_district and to_district.lower() not in to_name.lower() else to_name
 
     if booking_type == "vehicle_pickup" and vehicle_info:
         lines.append(f"🚘 *Vehicle:* {vehicle_info}")
         lines.append(f"📍 *Pickup from:* {from_display}")
-        if has_drop:
-            lines.append(f"📍 *Deliver to:* {to_display}")
+        lines.append(f"📍 *Deliver to:* {to_display}")
     else:
         lines.append(f"📍 *Pickup:* {from_display}")
-        if has_drop:
-            lines.append(f"📍 *Drop:* {to_display}")
-        else:
-            lines.append("📍 *Drop:* To be decided")
+        lines.append(f"📍 *Drop:* {to_display}")
 
     if stops and isinstance(stops, list):
         lines.append(f"🛑 *Stops:* {' → '.join(stops)}")
@@ -772,12 +756,11 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     if end_time:
         lines.append(f"🏁 *Until:* {end_time}")
 
-    # Route info — only show if we have a drop location (otherwise no route to calculate)
-    if has_drop:
-        lines.append(f"📏 *Distance:* {route_data['distance_km']} km")
-        ghat_note = " ⛰️" if route_data.get("is_ghat") else ""
-        lines.append(f"⏱️ *Est. travel time:* {dur_display}{ghat_note}")
-        lines.append(f"💰 *Est. Fare:* ₹{route_data['fare']}")
+    # Route info
+    lines.append(f"📏 *Distance:* {route_data['distance_km']} km")
+    ghat_note = " ⛰️" if route_data.get("is_ghat") else ""
+    lines.append(f"⏱️ *Est. travel time:* {dur_display}{ghat_note}")
+    lines.append(f"💰 *Est. Fare:* ₹{route_data['fare']}")
 
     if contact_name:
         lines.append(f"👤 *Contact:* {contact_name}")
@@ -923,7 +906,7 @@ def _handle_create_booking(customer_id: int, action_data: dict, route_data: dict
 
     # Build display names with district
     from_display = f"{from_name}, {from_district}" if from_district and from_district.lower() not in from_name.lower() else from_name
-    to_display = f"{to_name}, {to_district}" if to_name and to_district and to_district.lower() not in to_name.lower() else (to_name or "To be decided")
+    to_display = f"{to_name}, {to_district}" if to_district and to_district.lower() not in to_name.lower() else to_name
 
     # Use suggested report time if customer gave arrival time but no explicit report time
     if not report_time and route_data.get("suggested_report_time"):
