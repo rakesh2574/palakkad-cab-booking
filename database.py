@@ -70,7 +70,7 @@ def init_db():
         customer_id         INTEGER NOT NULL REFERENCES customers(id),
         driver_id           INTEGER REFERENCES drivers(id),
         pickup_location     TEXT    NOT NULL,
-        drop_location       TEXT    NOT NULL,
+        drop_location       TEXT,
         status              TEXT    DEFAULT 'pending',
         distance_km         REAL,
         est_duration_min    INTEGER,
