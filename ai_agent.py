@@ -117,15 +117,16 @@ These are saved in context for all future conversations. Don't ask again.
 BOOKING — WHAT YOU NEED (KEEP IT SIMPLE):
 To fire create_booking, you need these 5 things. Collect what's missing in ONE natural question, not one at a time:
 
-1. PICKUP — location/landmark + district
-   → Customer's home district is known from context. If they say "Koppam" and they're from Palakkad, you know it's Koppam, Palakkad.
-   → Accept local landmarks: "Kattans Hotel, bypass" is fine — set from="Kattans Hotel Bypass", from_district="Palakkad"
-   → Only ask for clarification if you genuinely can't figure out the district.
+1. PICKUP — MUST be a specific place/landmark + district (driver needs to find the customer!)
+   → "Kottayam" or "Palakkad" ALONE is NOT enough for pickup. Ask: "Where in Kottayam should the driver pick up? Bus stand, railway station, or any landmark?"
+   → GOOD: "Kattans Hotel Bypass", "Railway Station", "Ramanathapuram", "Bus Stand Kottayam"
+   → BAD: "Kottayam", "Palakkad", "Thrissur" (just district names — driver won't know where to go!)
+   → Customer's home district is known from context. If they say "Koppam" and they're from Palakkad, you know from_district="Palakkad".
 
-2. DROP — destination + district
-   → Even just a city/district name is FINE for the drop location (e.g., "Kakkanad" or "Kochi" or "Thrissur").
-   → The customer is going TO that place — the exact spot within can be figured out during the ride.
-   → "Kakkanad" → to="Kakkanad", to_district="Ernakulam". Don't ask "where in Kakkanad?"
+2. DROP — a city/district name is FINE (they're heading to that area, exact spot figured out during ride)
+   → "Kakkanad" → to="Kakkanad", to_district="Ernakulam". No need to ask "where in Kakkanad?"
+   → "Kochi", "Thrissur", "Palakkad" are all acceptable as drop locations.
+   → But if customer gives a specific drop landmark, use it!
 
 3. DATE — today/tomorrow/specific date
 
@@ -406,6 +407,25 @@ def process_message(phone: str, incoming_msg: str) -> str:
 
 BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "60"))
 
+# Kerala district names — used to detect when GPT sends just a district name
+# instead of a specific place/landmark as pickup or drop
+KERALA_DISTRICTS = {
+    "thiruvananthapuram", "trivandrum", "kollam", "pathanamthitta", "alappuzha",
+    "alleppey", "kottayam", "idukki", "ernakulam", "kochi", "cochin",
+    "thrissur", "trichur", "palakkad", "palghat", "malappuram", "kozhikode",
+    "calicut", "wayanad", "kannur", "cannanore", "kasaragod",
+}
+
+
+def _is_just_district(place: str) -> bool:
+    """Check if a place name is just a district/city name without a specific landmark."""
+    normalized = place.strip().lower()
+    # Remove common suffixes
+    for suffix in [" town", " city", " district"]:
+        normalized = normalized.replace(suffix, "")
+    normalized = normalized.strip()
+    return normalized in KERALA_DISTRICTS
+
 # Ghat / mountain road destinations — ORS underestimates these by 30-50%
 # because it doesn't account for hairpin bends, steep gradients, slow trucks, fog
 GHAT_KEYWORDS = {
@@ -549,6 +569,22 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
     # Catch nonsensical same-location trips
     if from_name.strip().lower() == to_name.strip().lower():
         return f"The pickup and drop location are both '{from_name}'. Could you please clarify the correct pickup and destination?"
+
+    # ── PICKUP MUST BE SPECIFIC (not just a district name) ──
+    # Pickup needs a specific landmark/area so the driver knows where to go
+    if _is_just_district(from_name):
+        from_district = action_data.get("from_district", from_name)
+        return f"Could you share a specific pickup location in {from_district}? For example, a landmark, hotel, bus stand, or area name — so the driver knows exactly where to come."
+
+    # Drop can be just a district/city — that's fine, they're heading to that area
+    # But if from_district or to_district is missing, fill from the name if possible
+    if not action_data.get("from_district"):
+        action_data["from_district"] = from_name.split(",")[-1].strip() if "," in from_name else ""
+    if not action_data.get("to_district"):
+        if _is_just_district(to_name):
+            action_data["to_district"] = to_name
+        else:
+            action_data["to_district"] = to_name.split(",")[-1].strip() if "," in to_name else ""
 
     # ── PAST DATE VALIDATION ──
     from datetime import datetime, timezone, timedelta
@@ -713,6 +749,11 @@ def _handle_propose_multiple_bookings(customer_id: int, phone: str, bookings_lis
         # Catch nonsensical same-location trips (e.g., "Kochi → Kochi")
         if from_name.strip().lower() == to_name.strip().lower():
             return f"Trip #{i} has the same pickup and drop location ({from_name}). Could you please clarify the correct pickup and destination?"
+
+        # Pickup must be specific, not just a district name
+        if _is_just_district(from_name):
+            from_district = bd.get("from_district", from_name)
+            return f"Trip #{i}: Could you share a specific pickup location in {from_district}? A landmark, hotel, bus stand, or area name would help the driver."
 
         # Check for missing date
         if not bd.get("travel_date"):

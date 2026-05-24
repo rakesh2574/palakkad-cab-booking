@@ -65,12 +65,22 @@ def whatsapp_webhook():
                     "Reply 'menu' to see today's fresh fish."
                 )
             else:
-                reply_text = (
-                    "✅ *Access Activated!* Welcome! 🚗\n\n"
-                    "Hi, I'm Vignesh — I run the driver-on-demand service here in Palakkad. "
-                    "Need a driver anywhere in Kerala or nearby? Just tell me where and when!\n\n"
-                    "What's your name?"
-                )
+                # Check if we already know this customer's name
+                customer = db.get_or_create_customer(phone)
+                cust_name = customer.get("name", "Unknown")
+                if cust_name and cust_name != "Unknown":
+                    reply_text = (
+                        f"✅ *Access Activated!* Welcome back, {cust_name}! 🚗\n\n"
+                        "Hi, it's Vignesh — ready to help with your driver needs. "
+                        "Just tell me where and when!"
+                    )
+                else:
+                    reply_text = (
+                        "✅ *Access Activated!* Welcome! 🚗\n\n"
+                        "Hi, I'm Vignesh — I run the driver-on-demand service here in Palakkad. "
+                        "Need a driver anywhere in Kerala or nearby? Just tell me where and when!\n\n"
+                        "Could I get your name and which district you're based in?"
+                    )
         elif result == "already_active":
             reply_text = _dispatch_by_service(phone, incoming_msg)
         elif result == "pin_exhausted":
