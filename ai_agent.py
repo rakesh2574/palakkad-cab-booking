@@ -980,7 +980,6 @@ def _format_single_confirmation(booking_id, status, from_name, to_name, driver,
     if end_time:
         lines.append(f"🏁 *Until:* {end_time}")
 
-    lines.append(f"🚗 *Driver:* {driver['name']} ({driver['vehicle_number']})")
     lines.append(f"📏 *Distance:* ~{est_distance} km")
     lines.append(f"⏱️ *Est. Duration:* ~{est_duration} min")
     lines.append(f"💰 *Est. Fare:* ₹{est_fare}")
@@ -994,8 +993,7 @@ def _format_single_confirmation(booking_id, status, from_name, to_name, driver,
     if driving_notes:
         lines.append(f"🚦 *Driving notes:* {driving_notes}")
 
-    footer = "\nDriver will contact you before the trip! 🙌" if status == "scheduled" else "\nDriver will reach you shortly! 🙌"
-    lines.append(footer)
+    lines.append("\nA driver will be assigned shortly and will contact you before the trip. 🙌")
     return "\n".join(lines)
 
 
@@ -1015,7 +1013,6 @@ def _format_multi_date_confirmation(booking_ids, from_name, to_name, driver,
         lines.append(f"🕐 *Driver reports at:* {report_time}")
     if travel_time:
         lines.append(f"⏰ *Pickup:* {travel_time}")
-    lines.append(f"🚗 *Driver:* {driver['name']} ({driver['vehicle_number']})")
     lines.append(f"📏 *Distance:* ~{est_distance} km per trip")
     lines.append(f"💰 *Fare:* ₹{per_trip_fare} × {len(booking_ids)} = *₹{total_fare}*")
     lines.append("")
@@ -1028,5 +1025,5 @@ def _format_multi_date_confirmation(booking_ids, from_name, to_name, driver,
         lines.append(f"📝 *Notes:* {special_notes}")
     if driving_notes:
         lines.append(f"🚦 *Driving notes:* {driving_notes}")
-    lines.append("\nDriver will contact you before each ride! 🙌")
+    lines.append("\nDrivers will be assigned and will contact you before each ride. 🙌")
     return "\n".join(lines)
