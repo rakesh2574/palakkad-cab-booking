@@ -68,6 +68,7 @@ CRITICAL IDENTITY RULES:
 - The CUSTOMER is the person chatting with you. They are NOT Vignesh. NEVER call the customer "Vignesh".
 - The customer's name is provided in the system context as [Customer Name: ...]. Use THAT name for the customer.
 - If the customer's name shows as "Unknown", ask their name and district (home base). Use set_name to save name.
+- If the customer's name is ALREADY KNOWN (not "Unknown"), NEVER ask for their name again. Just greet them and get to business.
 - NEVER confuse your own name with the customer's name.
 
 YOUR PERSONALITY & LANGUAGE:
@@ -143,7 +144,9 @@ CONTACT NUMBER HANDLING:
 - If they give a different number → save it in contact_phone
 
 ⛔ CRITICAL DON'TS:
+- NEVER ask for the customer's name if it's already known (not "Unknown" in context). Just greet and proceed.
 - NEVER bluntly ask "What is your phone number?" — you already have it!
+- If booking is for TODAY and the requested pickup time has ALREADY PASSED (current time is {time_str} IST), tell the customer and ask for a later time or tomorrow.
 - NEVER ask for "drop time" or "how long the trip will take" — the system calculates this.
 - NEVER ask the same question twice — read the conversation history!
 - NEVER ask questions one by one in separate messages — combine missing items into ONE message.
@@ -276,14 +279,15 @@ def process_message(phone: str, incoming_msg: str) -> str:
             sessions.pop(phone, None)
             db.log_conversation(customer_id, "out", reply)
             return reply
-        elif is_reject:
+        elif is_reject and len(msg_lower.split()) <= 3:
+            # Only treat as cancellation if it's a SHORT rejection like "no", "venda", "cancel"
+            # If the message is longer (e.g., "no, I said 6 AM today"), it's a CORRECTION — let GPT handle it
             sessions.pop(phone, None)
             reply = "No problem, the booking has been cancelled. Would you like to make any changes and rebook? 🙏"
             db.log_conversation(customer_id, "out", reply)
             return reply
-        # If neither clear confirm nor reject, let GPT handle
-        # (customer might be giving corrections like "no, not 9, make it 10")
-        sessions.pop(phone, None)  # Clear pending, GPT will re-propose
+        # Longer messages with "no" or corrections — let GPT handle and re-propose
+        sessions.pop(phone, None)
 
     # 3. Build messages for OpenAI
     messages = [{"role": "system", "content": _build_system_prompt()}]
@@ -400,7 +404,7 @@ def process_message(phone: str, incoming_msg: str) -> str:
     return reply
 
 
-BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "35"))
+BUFFER_MINUTES = int(os.getenv("BUFFER_MINUTES", "60"))
 
 # Ghat / mountain road destinations — ORS underestimates these by 30-50%
 # because it doesn't account for hairpin bends, steep gradients, slow trucks, fog
@@ -568,6 +572,24 @@ def _handle_propose_booking(customer_id: int, phone: str, action_data: dict, gpt
         past_dates = [d for d in travel_dates_val if d < today_str]
         if past_dates:
             return f"Sorry, these dates are in the past: {', '.join(past_dates)}. Could you please provide valid future dates? Today is {today_str}. 🙏"
+
+    # ── PAST TIME VALIDATION (for today's bookings) ──
+    # If booking is for today, check if the pickup/report time has already passed
+    report_time_val = action_data.get("report_time")
+    event_time_val = action_data.get("event_time")
+    pickup_time_str = report_time_val or event_time_val  # whichever was given
+    is_today = (travel_date_val == today_str) or (not travel_date_val)  # null date = immediate/today
+
+    if is_today and pickup_time_str:
+        try:
+            pickup_hour, pickup_min = map(int, pickup_time_str.split(":"))
+            current_hour = now_ist.hour
+            current_min = now_ist.minute
+            if pickup_hour < current_hour or (pickup_hour == current_hour and pickup_min <= current_min):
+                current_time_str = now_ist.strftime("%I:%M %p")
+                return f"Sorry, it's already {current_time_str} IST. The pickup time {pickup_time_str} has already passed. Could you please provide a later time for today, or book for tomorrow? 🙏"
+        except Exception:
+            pass
 
     # Save customer name if provided
     cust_name = action_data.get("customer_name")
