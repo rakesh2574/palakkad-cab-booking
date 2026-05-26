@@ -2,7 +2,7 @@
 AI Booking Agent — powered by GPT-4o mini.
 
 The agent interprets WhatsApp messages and calls database helpers
-to manage bookings. Uses OpenRouteService for real distance/duration.
+to manage bookings. Uses Google Maps API for real distance/duration.
 
 V3: Vignesh persona, cross-state, round trips, full-day, real routing.
 """
