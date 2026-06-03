@@ -497,13 +497,32 @@ def _is_ghat_route(from_name: str, to_name: str, stops: list = None) -> bool:
 
 def _build_geocode_name(place: str, district: str) -> str:
     """Combine place name with district for accurate geocoding.
-    e.g., 'Koppam' + 'Palakkad' → 'Koppam, Palakkad, Kerala, India'"""
+    e.g., 'Koppam' + 'Palakkad' → 'Koppam, Palakkad, Kerala, India'
+    e.g., 'Coimbatore Airport' + 'Coimbatore' → 'Coimbatore Airport, Tamil Nadu, India'
+    """
     if not district:
-        return place
+        return f"{place}, India"
+
+    # Determine the state based on the district
+    district_lower = district.strip().lower()
+    if district_lower in KERALA_DISTRICTS:
+        state = "Kerala"
+    elif district_lower in {"coimbatore", "pollachi", "palani", "ooty", "coonoor",
+                            "kodaikanal", "madurai", "chennai", "salem", "tiruppur",
+                            "nilgiris", "valparai", "hosur"}:
+        state = "Tamil Nadu"
+    elif district_lower in {"bangalore", "bengaluru", "mangalore", "mangaluru",
+                            "mysore", "mysuru", "coorg", "madikeri", "hassan"}:
+        state = "Karnataka"
+    else:
+        state = ""  # Let Google figure it out
+
+    suffix = f", {state}, India" if state else ", India"
+
     # Don't duplicate if place already contains the district
-    if district.lower() in place.lower():
-        return f"{place}, Kerala, India"
-    return f"{place}, {district}, Kerala, India"
+    if district_lower in place.lower():
+        return f"{place}{suffix}"
+    return f"{place}, {district}{suffix}"
 
 
 def _compute_route_data(action_data: dict) -> dict:
