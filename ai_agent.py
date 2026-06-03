@@ -527,24 +527,25 @@ def _compute_route_data(action_data: dict) -> dict:
     from_geocode = _build_geocode_name(from_name, from_district)
     to_geocode = _build_geocode_name(to_name, to_district)
 
-    # ── REAL ROUTING via OpenRouteService ──
+    # ── REAL ROUTING via Google Maps API ──
+    print(f"🗺️ Computing route: '{from_geocode}' → '{to_geocode}'")
     if stops and isinstance(stops, list) and len(stops) > 0:
         all_places = [from_geocode] + stops + [to_geocode]
         route = rc.get_route_with_stops(all_places)
         if route:
             est_distance = route["distance_km"]
             est_duration = route["duration_min"]
-            route_source = "openrouteservice"
-            print(f"📍 Multi-stop route: {' → '.join(all_places)} = {est_distance}km, {est_duration}min")
+            route_source = "google_maps"
+            print(f"✅ Multi-stop route (Google Maps): {' → '.join(all_places)} = {est_distance}km, {est_duration}min")
     else:
         route = rc.get_route(from_geocode, to_geocode)
         if route:
             est_distance = route["distance_km"]
             est_duration = route["duration_min"]
-            route_source = "openrouteservice"
-            print(f"📍 Route: {from_geocode} → {to_geocode} = {est_distance}km, {est_duration}min")
+            route_source = "google_maps"
+            print(f"✅ Route (Google Maps): {from_geocode} → {to_geocode} = {est_distance}km, {est_duration}min")
         else:
-            print(f"⚠️ Route API failed for {from_geocode} → {to_geocode}, using GPT estimate")
+            print(f"❌ Google Maps API FAILED for {from_geocode} → {to_geocode} — falling back to GPT estimate: {est_distance}km, {est_duration}min")
 
     # For ghat/mountain routes, add 80% to ORS duration (it severely underestimates
     # hairpin bends, steep gradients, slow trucks, fog on ghat roads)
